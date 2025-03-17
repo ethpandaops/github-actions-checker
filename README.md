@@ -63,23 +63,37 @@ export GITHUB_TOKEN="$(gh auth token)"
 ```
 
 #### Scan an organization
-```
+```sh
 ./action-deps --org ethpandaops
 ```
 
 #### Scan a specific repository
-```
+```sh
 ./action-deps --repo ethpandaops/ethereum-helm-charts
 ```
 
 #### Include archived repositories
-```
+```sh
 ./action-deps --org ethpandaops --include-archived
 ```
 
 #### Generate an HTML report from JSON output (Useful for just debugging the HTML report)
+```sh
+./action-deps generate-html -i reports/ethpandaops-ethereum-helm-charts.json --output-dir reports
 ```
-./action-deps generate-html -i reports/ethpandaops-ethereum-helm-charts-actions.json --output-dir reports
+
+## Creating PRs
+
+**Note:** You might need to create a proper PAT token for this one. Your github cli token might not work due to missing the "workflow" scope.
+
+#### Create a PR to update the GitHub Actions to use pinned hashes
+```sh
+./action-deps create-pr -i reports/ethpandaops-ethereum-helm-charts.json --repo ethpandaops/ethereum-helm-charts
+```
+
+### Create multiple PRs for all repositories in a file
+```sh
+./action-deps create-pr -i reports/your-organization.json --all
 ```
 
 ## License
