@@ -4,7 +4,7 @@ A tool to analyze GitHub Action dependencies in repositories and organizations, 
 
 ## Demo
 
-There's a [report for the ethpandaops organization]((https://ethpandaops.github.io/github-actions-checker/ethpandaops.html)). This report is updated via the [verify-org](.github/workflows/verify-org.yaml) github workflow.
+There's a [report for the ethpandaops organization](https://ethpandaops.github.io/github-actions-checker/ethpandaops.html). This report is updated via the [verify-org](.github/workflows/verify-org.yaml) github workflow.
 
 [![](img/example-report.png)](img/example-report.png)
 
