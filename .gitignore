@@ -1,0 +1,44 @@
+# Default output directory
+reports/
+action-deps
+example.json
+
+# Binaries and build artifacts
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go specific
+*.test
+*.out
+go.work
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Dependency directories
+vendor/
+
+# Debug and profiling
+*.prof
+*.trace
+debug/
+
+# Environment files
+.env
+.env.local
+*.env
+
+# Test coverage
+coverage.txt
+coverage.html
+
+# Log files
+*.log
