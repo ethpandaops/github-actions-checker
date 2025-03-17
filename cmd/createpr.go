@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/google/go-github/v60/github"
@@ -70,8 +71,15 @@ func createPR(cmd *cobra.Command, args []string) error {
 			repoSet[dep.Repo] = true
 		}
 
-		// Process each repo
+		// Convert to slice and sort
+		repos := make([]string, 0, len(repoSet))
 		for repo := range repoSet {
+			repos = append(repos, repo)
+		}
+		sort.Strings(repos)
+
+		// Process each repo in sorted order
+		for _, repo := range repos {
 			logrus.Infof("Processing repository: %s", repo)
 			targetRepo = repo
 			if err := processRepo(token, deps); err != nil {
