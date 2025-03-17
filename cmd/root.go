@@ -181,15 +181,20 @@ func getWorkflowDependencies(ctx context.Context, client *github.Client, owner, 
 	// Track processed local actions to avoid infinite recursion
 	processedLocalActions := make(map[string]bool)
 
-	repository, _, err := client.Repositories.Get(ctx, owner, repo)
+	// Get default branch using a more robust approach
+	defaultBranch := "master" // Default fallback
+
+	repository, resp, err := client.Repositories.Get(ctx, owner, repo)
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
 			"repo":  fmt.Sprintf("%s/%s", owner, repo),
 			"error": err,
+			"resp":  resp.Status,
 		}).Error("Failed to get repository")
-		return deps
+		// Continue with default branch instead of returning
+	} else if repository != nil && repository.DefaultBranch != nil {
+		defaultBranch = *repository.DefaultBranch
 	}
-	defaultBranch := repository.GetDefaultBranch()
 
 	// Helper function to check if a file exists and process it
 	var checkAndProcessWorkflow func(path string) ([]ActionDetails, []ActionDependency)
