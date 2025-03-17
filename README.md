@@ -2,6 +2,8 @@
 
 A tool to analyze GitHub Action dependencies in repositories and organizations, helping identify potential security risks from non-pinned action versions.
 
+[![](img/example-report.png)](img/example-report.png)
+
 ## Why pin GitHub Actions?
 Using version tags like v1 or v2 in GitHub Actions can be risky as the action maintainer can change the underlying code of any tag, or branch. Pinning to specific commit hashes ensures you're using a specific, immutable version of the action.
 
