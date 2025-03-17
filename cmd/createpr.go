@@ -124,12 +124,27 @@ func processRepo(token string, deps []ActionDependency) error {
 	client := github.NewClient(tc)
 
 	// Get the default branch
-	repository, _, err := client.Repositories.Get(ctx, owner, repo)
+	repository, resp, err := client.Repositories.Get(ctx, owner, repo)
 	if err != nil {
-		return fmt.Errorf("failed to get repository: %w", err)
-	}
-	defaultBranch := repository.GetDefaultBranch()
+		logrus.WithFields(logrus.Fields{
+			"repo":  targetRepo,
+			"error": err,
+			"resp":  resp.Status,
+		}).Error("Failed to get repository")
+		// Default to "master" if we can't get the default branch
+		defaultBranch := "master"
+		logrus.WithField("branch", defaultBranch).Info("Using default branch")
 
+		// Continue with the rest of the function using the default branch
+		return processRepoWithBranch(ctx, client, owner, repo, defaultBranch, branchName, targetDeps)
+	}
+
+	defaultBranch := repository.GetDefaultBranch()
+	return processRepoWithBranch(ctx, client, owner, repo, defaultBranch, branchName, targetDeps)
+}
+
+// New function to handle the repository processing with a known branch
+func processRepoWithBranch(ctx context.Context, client *github.Client, owner, repo, defaultBranch, branchName string, targetDeps []ActionDependency) error {
 	// Get the reference to the default branch
 	ref, _, err := client.Git.GetRef(ctx, owner, repo, "refs/heads/"+defaultBranch)
 	if err != nil {
