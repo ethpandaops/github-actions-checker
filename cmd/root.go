@@ -243,10 +243,12 @@ func getWorkflowDependencies(ctx context.Context, client *github.Client, owner, 
 						actionYamlPath = filepath.Join(actionPath, "action")
 					}
 
-					// Try action.yml first
-					localActions, subDeps := checkAndProcessWorkflow(actionYamlPath + ".yml")
-					if localActions == nil && subDeps == nil {
-						localActions, subDeps = checkAndProcessWorkflow(actionYamlPath + ".yaml")
+					// The action doesnt have the filename, so we have to try action.yml / action.yaml
+					actionYamlPath = actionYamlPath + ".yml"
+					localActions, subDeps := checkAndProcessWorkflow(actionYamlPath)
+					if localActions == nil && subDeps == nil || len(localActions) == 0 && len(subDeps) == 0 {
+						actionYamlPath = strings.TrimSuffix(actionYamlPath, ".yml") + ".yaml"
+						localActions, subDeps = checkAndProcessWorkflow(actionYamlPath)
 					}
 
 					if localActions != nil {
@@ -294,7 +296,7 @@ func getWorkflowDependencies(ctx context.Context, client *github.Client, owner, 
 				deps = append(deps, ActionDependency{
 					Repo:     fmt.Sprintf("%s/%s", owner, repo),
 					Actions:  actions,
-					Workflow: filepath.Base(entry.GetPath()),
+					Workflow: entry.GetPath(),
 					Branch:   defaultBranch,
 				})
 				deps = append(deps, localDeps...)

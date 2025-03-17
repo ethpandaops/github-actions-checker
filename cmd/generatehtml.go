@@ -210,7 +210,7 @@ const reportTemplate = `
                     {{range .Workflows}}
                     <div class="border-t pt-4">
                         <h3 class="font-medium mb-2">
-                            <a href="https://github.com/{{$repoName}}/blob/{{.Branch}}/.github/workflows/{{.Name}}"
+                            <a href="https://github.com/{{$repoName}}/blob/{{.Branch}}/{{.Name}}"
                                target="_blank"
                                class="text-gray-700 hover:text-gray-900">
                                 {{.Name}}

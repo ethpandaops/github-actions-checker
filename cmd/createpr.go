@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -116,7 +115,7 @@ func createPR(cmd *cobra.Command, args []string) error {
 	// Process each workflow file
 	filesChanged := make(map[string]bool)
 	for _, dep := range targetDeps {
-		workflowPath := filepath.Join(".github/workflows", dep.Workflow)
+		workflowPath := dep.Workflow
 
 		// Get the workflow file content
 		fileContent, _, _, err := client.Repositories.GetContents(
@@ -198,9 +197,40 @@ func createPR(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// If no files were changed, exit
+	// If no files were changed, check if a PR already exists and show its link
 	if len(filesChanged) == 0 {
-		logrus.Info("No files were changed, skipping PR creation")
+		logrus.Info("No files were changed")
+
+		// Check if a PR already exists for this branch
+		existingPRs, _, err := client.PullRequests.List(ctx, owner, repo, &github.PullRequestListOptions{
+			Head:  fmt.Sprintf("%s:%s", owner, branchName),
+			State: "open",
+		})
+		if err != nil {
+			return fmt.Errorf("failed to check for existing PRs: %w", err)
+		}
+
+		if len(existingPRs) > 0 {
+			pr := existingPRs[0]
+			fmt.Printf("Found existing PR #%d: %s\n", pr.GetNumber(), pr.GetHTMLURL())
+		} else {
+			fmt.Println("No existing PR found and no changes to make")
+		}
+		return nil
+	}
+
+	// Check if a PR already exists for this branch
+	existingPRs, _, err := client.PullRequests.List(ctx, owner, repo, &github.PullRequestListOptions{
+		Head:  fmt.Sprintf("%s:%s", owner, branchName),
+		State: "open",
+	})
+	if err != nil {
+		return fmt.Errorf("failed to check for existing PRs: %w", err)
+	}
+
+	if len(existingPRs) > 0 {
+		pr := existingPRs[0]
+		fmt.Printf("Updated existing PR #%d: %s\n", pr.GetNumber(), pr.GetHTMLURL())
 		return nil
 	}
 
