@@ -20,6 +20,7 @@ var (
 	branchName    string
 	prTitle       string
 	prBody        string
+	allRepos      bool
 	createPRCmd   = &cobra.Command{
 		Use:   "create-pr",
 		Short: "Create a PR to update GitHub Actions to use recommended hashes",
@@ -33,8 +34,9 @@ func init() {
 	createPRCmd.Flags().StringVarP(&branchName, "branch", "b", "update-github-actions", "Branch name for the PR")
 	createPRCmd.Flags().StringVarP(&prTitle, "title", "t", "Update GitHub Actions to use pinned hashes", "PR title")
 	createPRCmd.Flags().StringVarP(&prBody, "body", "", "This PR updates GitHub Actions to use pinned commit hashes for better security.", "PR body")
+	createPRCmd.Flags().BoolVarP(&allRepos, "all", "a", false, "Process all repositories in the input file")
 	createPRCmd.MarkFlagRequired("input")
-	createPRCmd.MarkFlagRequired("repo")
+	// Don't mark repo as required - we'll check it in the command
 	rootCmd.AddCommand(createPRCmd)
 }
 
@@ -44,12 +46,10 @@ func createPR(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("GITHUB_TOKEN environment variable is required")
 	}
 
-	// Parse target repo
-	parts := strings.Split(targetRepo, "/")
-	if len(parts) != 2 {
-		return fmt.Errorf("repo must be in format owner/repo")
+	// Check if either --repo or --all is provided
+	if !allRepos && targetRepo == "" {
+		return fmt.Errorf("either --repo or --all flag is required")
 	}
-	owner, repo := parts[0], parts[1]
 
 	// Read and parse the JSON file
 	data, err := os.ReadFile(inputJSONFile)
@@ -61,6 +61,41 @@ func createPR(cmd *cobra.Command, args []string) error {
 	if err := json.Unmarshal(data, &deps); err != nil {
 		return fmt.Errorf("failed to parse JSON: %w", err)
 	}
+
+	// If --all flag is set, process all repos
+	if allRepos {
+		// Get unique repos
+		repoSet := make(map[string]bool)
+		for _, dep := range deps {
+			repoSet[dep.Repo] = true
+		}
+
+		// Process each repo
+		for repo := range repoSet {
+			logrus.Infof("Processing repository: %s", repo)
+			targetRepo = repo
+			if err := processRepo(token, deps); err != nil {
+				logrus.WithFields(logrus.Fields{
+					"repo":  repo,
+					"error": err,
+				}).Error("Failed to process repository")
+				// Continue with next repo instead of returning
+			}
+		}
+		return nil
+	}
+
+	// Process single repo
+	return processRepo(token, deps)
+}
+
+func processRepo(token string, deps []ActionDependency) error {
+	// Parse target repo
+	parts := strings.Split(targetRepo, "/")
+	if len(parts) != 2 {
+		return fmt.Errorf("repo must be in format owner/repo")
+	}
+	owner, repo := parts[0], parts[1]
 
 	// Filter dependencies for the target repo
 	var targetDeps []ActionDependency
