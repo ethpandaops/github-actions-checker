@@ -1,0 +1,27 @@
+name: Verify GitHub Actions Dependencies
+
+on:
+  schedule:
+    - cron: '0 0 * * 0'  # Runs at 00:00 every Sunday
+  workflow_dispatch:      # Allows manual triggering
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Run GitHub Actions Checker
+        run: |
+          mkdir -p reports
+          docker run --rm \
+            -e GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }} \
+            -v ${{ github.workspace }}/reports:/reports \
+            ghcr.io/ethpandaops/github-actions-checker:master \
+            --org ethpandaops --output-dir /reports
+
+      - name: Upload reports
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        with:
+          name: github-actions-report
+          path: reports/
