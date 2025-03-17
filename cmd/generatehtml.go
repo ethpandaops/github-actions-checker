@@ -28,8 +28,9 @@ func init() {
 }
 
 type RepoSummary struct {
-	Name      string
-	Workflows []WorkflowSummary
+	Name        string
+	Workflows   []WorkflowSummary
+	HasWarnings bool
 }
 
 type WorkflowSummary struct {
@@ -110,14 +111,34 @@ func generateHTMLReport(jsonFilePath, outputPath string, deps []ActionDependency
 		})
 	}
 
-	// Convert map to sorted slice
+	// Convert map to sorted slice and check for warnings
 	repos := make([]*RepoSummary, 0, len(repoMap))
 	for _, repo := range repoMap {
 		// Sort workflows by name
 		sort.Slice(repo.Workflows, func(i, j int) bool {
 			return repo.Workflows[i].Name < repo.Workflows[j].Name
 		})
-		repos = append(repos, repo)
+
+		// Check if repo has any warnings (external deps without hash)
+		hasWarnings := false
+		for _, workflow := range repo.Workflows {
+			for _, action := range workflow.Actions {
+				if action.Type == "external" && !action.IsHashedVersion {
+					hasWarnings = true
+					break
+				}
+			}
+			if hasWarnings {
+				break
+			}
+		}
+
+		// Add hasWarnings field to the repo summary
+		repos = append(repos, &RepoSummary{
+			Name:        repo.Name,
+			Workflows:   repo.Workflows,
+			HasWarnings: hasWarnings,
+		})
 	}
 	sort.Slice(repos, func(i, j int) bool {
 		return repos[i].Name < repos[j].Name
@@ -171,6 +192,22 @@ const reportTemplate = `
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GitHub Actions Report</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .collapsible-content {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease-out;
+        }
+        .expanded .collapsible-content {
+            max-height: 10000px; /* Large enough to contain content */
+        }
+        .chevron {
+            transition: transform 0.3s;
+        }
+        .expanded .chevron {
+            transform: rotate(90deg);
+        }
+    </style>
 </head>
 <body class="bg-gray-100">
     <div class="container mx-auto px-4 py-8">
@@ -199,85 +236,103 @@ const reportTemplate = `
 
         <div class="space-y-6">
             {{range .Repos}}
-            <div class="bg-white rounded-lg shadow-md p-6">
-                <h2 class="text-xl font-semibold mb-4">
-                    <a href="https://github.com/{{.Name}}" target="_blank" class="text-blue-600 hover:text-blue-800">
-                        {{.Name}}
-                    </a>
-                </h2>
-                <div class="space-y-4">
-                    {{$repoName := .Name}}
-                    {{range .Workflows}}
-                    <div class="border-t pt-4">
-                        <h3 class="font-medium mb-2">
-                            <a href="https://github.com/{{$repoName}}/blob/{{.Branch}}/{{.Name}}"
-                               target="_blank"
-                               class="text-gray-700 hover:text-gray-900">
-                                {{.Name}}
-                            </a>
-                        </h3>
-                        <div class="overflow-x-auto">
-                            <table class="min-w-full">
-                                <thead>
-                                    <tr class="bg-gray-50">
-                                        <th class="px-4 py-2 text-left text-sm font-medium text-gray-500">Action</th>
-                                        <th class="px-4 py-2 text-right text-sm font-medium text-gray-500">Recommended Hash</th>
-                                        <th class="px-4 py-2 text-right text-sm font-medium text-gray-500 w-32">Version</th>
-                                        <th class="px-4 py-2 text-right text-sm font-medium text-gray-500 w-24">Type</th>
-                                    </tr>
-                                </thead>
-                                <tbody class="divide-y divide-gray-200">
-                                    {{range .Actions}}
-                                    <tr class="hover:bg-gray-50
-                                        {{if and (eq .Type "external") (not .IsHashedVersion)}}
-                                            bg-orange-50
-                                        {{end}}">
-                                        <td class="px-4 py-2 text-sm">
-                                            {{if eq .Type "external"}}
-                                                <a href="https://github.com/{{.Name}}"
-                                                   target="_blank"
-                                                   class="text-blue-600 hover:text-blue-800">
-                                                    {{.Name}}
-                                                </a>
-                                            {{else}}
-                                                {{.Name}}
-                                            {{end}}
-                                        </td>
-                                        <td class="px-4 py-2 text-sm font-mono text-right">
-                                            {{if and (eq .Type "external") (not .IsHashedVersion) .RecommendedHash}}
-                                                <span class="text-red-600">{{.RecommendedHash}}</span>
-                                            {{end}}
-                                        </td>
-                                        <td class="px-4 py-2 text-sm text-right">
-                                            <span class="{{if .IsHashedVersion}}text-green-600{{end}}">
-                                                {{.Version}}
-                                            </span>
+            <div class="bg-white rounded-lg shadow-md p-6 collapsible-section {{if .HasWarnings}}expanded{{end}}">
+                <div class="flex justify-between items-center cursor-pointer" onclick="toggleCollapse(this.parentElement)">
+                    <h2 class="text-xl font-semibold">
+                        <a href="https://github.com/{{.Name}}" target="_blank" class="text-blue-600 hover:text-blue-800">
+                            {{.Name}}
+                        </a>
+                        {{if .HasWarnings}}
+                            <span class="ml-2 text-amber-500">⚠️</span>
+                        {{else}}
+                            <span class="ml-2 text-green-500">✓</span>
+                        {{end}}
+                    </h2>
+                    <svg class="chevron w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
+                    </svg>
+                </div>
+                <div class="collapsible-content">
+                    <div class="space-y-4 mt-4">
+                        {{$repoName := .Name}}
+                        {{range .Workflows}}
+                        <div class="border-t pt-4">
+                            <h3 class="font-medium mb-2">
+                                <a href="https://github.com/{{$repoName}}/blob/{{.Branch}}/{{.Name}}"
+                                   target="_blank"
+                                   class="text-gray-700 hover:text-gray-900">
+                                    {{.Name}}
+                                </a>
+                            </h3>
+                            <div class="overflow-x-auto">
+                                <table class="min-w-full">
+                                    <thead>
+                                        <tr class="bg-gray-50">
+                                            <th class="px-4 py-2 text-left text-sm font-medium text-gray-500">Action</th>
+                                            <th class="px-4 py-2 text-right text-sm font-medium text-gray-500">Recommended Hash</th>
+                                            <th class="px-4 py-2 text-right text-sm font-medium text-gray-500 w-32">Version</th>
+                                            <th class="px-4 py-2 text-right text-sm font-medium text-gray-500 w-24">Type</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="divide-y divide-gray-200">
+                                        {{range .Actions}}
+                                        <tr class="hover:bg-gray-50
                                             {{if and (eq .Type "external") (not .IsHashedVersion)}}
-                                                <span class="ml-2 text-amber-500 cursor-help" title="This version is not using a fixed git commit hash and could be vulnerable in the future">⚠️</span>
-                                            {{end}}
-                                        </td>
-                                        <td class="px-4 py-2 text-sm text-right">
-                                            <span class="px-2 py-1 rounded-full text-xs
-                                                {{if eq .Type "internal"}}
-                                                    bg-gray-100 text-gray-800
+                                                bg-orange-50
+                                            {{end}}">
+                                            <td class="px-4 py-2 text-sm">
+                                                {{if eq .Type "external"}}
+                                                    <a href="https://github.com/{{.Name}}"
+                                                       target="_blank"
+                                                       class="text-blue-600 hover:text-blue-800">
+                                                        {{.Name}}
+                                                    </a>
                                                 {{else}}
-                                                    bg-blue-100 text-blue-800
-                                                {{end}}">
-                                                {{.Type}}
-                                            </span>
-                                        </td>
-                                    </tr>
-                                    {{end}}
-                                </tbody>
-                            </table>
+                                                    {{.Name}}
+                                                {{end}}
+                                            </td>
+                                            <td class="px-4 py-2 text-sm font-mono text-right">
+                                                {{if and (eq .Type "external") (not .IsHashedVersion) .RecommendedHash}}
+                                                    <span class="text-red-600">{{.RecommendedHash}}</span>
+                                                {{end}}
+                                            </td>
+                                            <td class="px-4 py-2 text-sm text-right">
+                                                <span class="{{if .IsHashedVersion}}text-green-600{{end}}">
+                                                    {{.Version}}
+                                                </span>
+                                                {{if and (eq .Type "external") (not .IsHashedVersion)}}
+                                                    <span class="ml-2 text-amber-500 cursor-help" title="This version is not using a fixed git commit hash and could be vulnerable in the future">⚠️</span>
+                                                {{end}}
+                                            </td>
+                                            <td class="px-4 py-2 text-sm text-right">
+                                                <span class="px-2 py-1 rounded-full text-xs
+                                                    {{if eq .Type "internal"}}
+                                                        bg-gray-100 text-gray-800
+                                                    {{else}}
+                                                        bg-blue-100 text-blue-800
+                                                    {{end}}">
+                                                    {{.Type}}
+                                                </span>
+                                            </td>
+                                        </tr>
+                                        {{end}}
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
+                        {{end}}
                     </div>
-                    {{end}}
                 </div>
             </div>
             {{end}}
         </div>
     </div>
+
+    <script>
+        function toggleCollapse(element) {
+            element.classList.toggle('expanded');
+        }
+    </script>
 </body>
 </html>
 `
