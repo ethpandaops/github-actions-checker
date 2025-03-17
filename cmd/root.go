@@ -22,6 +22,7 @@ var (
 	OutputDir       string
 	OutputFile      string
 	IncludeArchived bool
+	IncludeForked   bool
 	rootCmd         = &cobra.Command{
 		Use:   "action-deps",
 		Short: "Analyze GitHub Action dependencies in an organization or repository",
@@ -42,6 +43,7 @@ func init() {
 	rootCmd.Flags().StringVarP(&OutputDir, "output-dir", "d", "reports", "Directory to write output files to")
 	rootCmd.Flags().StringVarP(&OutputFile, "output-file", "f", "", "Output file name (without extension)")
 	rootCmd.Flags().BoolVarP(&IncludeArchived, "include-archived", "a", false, "Include archived repositories in scan")
+	rootCmd.Flags().BoolVarP(&IncludeForked, "include-forked", "", false, "Include forked repositories in scan")
 }
 
 type ActionDependency struct {
@@ -87,6 +89,10 @@ func run(cmd *cobra.Command, args []string) error {
 			},
 		}
 
+		if IncludeForked {
+			opt.Type = "all"
+		}
+
 		for {
 			repos, resp, err := client.Repositories.ListByOrg(ctx, OrgName, opt)
 			if err != nil {
@@ -99,6 +105,14 @@ func run(cmd *cobra.Command, args []string) error {
 					logrus.WithFields(logrus.Fields{
 						"repo": fmt.Sprintf("%s/%s", OrgName, *repo.Name),
 					}).Info("Skipping archived repository")
+					continue
+				}
+
+				// Skip forked repositories unless explicitly included
+				if *repo.Fork && !IncludeForked {
+					logrus.WithFields(logrus.Fields{
+						"repo": fmt.Sprintf("%s/%s", OrgName, *repo.Name),
+					}).Info("Skipping forked repository")
 					continue
 				}
 
