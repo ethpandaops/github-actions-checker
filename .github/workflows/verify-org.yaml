@@ -1,9 +1,15 @@
-name: Verify GitHub Actions Dependencies
+name: Verify GitHub Actions Dependencies - Org
 
 on:
   schedule:
     - cron: '0 0 * * 0'  # Runs at 00:00 every Sunday
-  workflow_dispatch:      # Allows manual triggering
+  workflow_dispatch:
+    inputs:
+      org:
+        description: 'GitHub organization to analyze'
+        required: false
+        default: 'ethpandaops'
+        type: string
 
 jobs:
   analyze:
@@ -11,17 +17,24 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Run GitHub Actions Checker
+      - id: parse
+        run: |
+          DEFAULT_ORG="ethpandaops"
+          echo "default_org=$(echo ${INPUT_ORG:-$DEFAULT_ORG})" >> $GITHUB_OUTPUT
+        env:
+          INPUT_ORG: "${{ inputs.org }}"
+
+      - name: run
         run: |
           mkdir -p reports
           docker run --rm \
             -e GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }} \
             -v ${{ github.workspace }}/reports:/reports \
             ghcr.io/ethpandaops/github-actions-checker:master \
-            --org ethpandaops --output-dir /reports
+            --org ${{ steps.parse.outputs.default_org }} --output-dir /reports
 
-      - name: Upload reports
+      - name: upload
         uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
         with:
           name: github-actions-report
-          path: reports/
+          path: reports/*
