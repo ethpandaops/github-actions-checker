@@ -113,6 +113,8 @@ func generateHTMLReport(jsonFilePath, outputPath string, deps []ActionDependency
 
 	// Convert map to sorted slice and check for warnings
 	repos := make([]*RepoSummary, 0, len(repoMap))
+	var reposWithWarnings, reposWithoutWarnings int
+
 	for _, repo := range repoMap {
 		// Sort workflows by name
 		sort.Slice(repo.Workflows, func(i, j int) bool {
@@ -133,6 +135,13 @@ func generateHTMLReport(jsonFilePath, outputPath string, deps []ActionDependency
 			}
 		}
 
+		// Count repos with/without warnings
+		if hasWarnings {
+			reposWithWarnings++
+		} else {
+			reposWithoutWarnings++
+		}
+
 		// Add hasWarnings field to the repo summary
 		repos = append(repos, &RepoSummary{
 			Name:        repo.Name,
@@ -141,6 +150,10 @@ func generateHTMLReport(jsonFilePath, outputPath string, deps []ActionDependency
 		})
 	}
 	sort.Slice(repos, func(i, j int) bool {
+		// Sort by warnings first (repos with warnings come first), then by name
+		if repos[i].HasWarnings != repos[j].HasWarnings {
+			return repos[i].HasWarnings // true comes before false
+		}
 		return repos[i].Name < repos[j].Name
 	})
 
@@ -150,9 +163,16 @@ func generateHTMLReport(jsonFilePath, outputPath string, deps []ActionDependency
 		return fmt.Errorf("failed to read JSON file: %w", err)
 	}
 
-	// Generate HTML report
-	tmpl := template.Must(template.New("report").Parse(reportTemplate))
+	// Create template with custom functions
+	funcMap := template.FuncMap{
+		"add": func(a, b int) int {
+			return a + b
+		},
+	}
 
+	tmpl := template.Must(template.New("report").Funcs(funcMap).Parse(reportTemplate))
+
+	// Generate HTML report
 	f, err := os.Create(outputPath)
 	if err != nil {
 		return fmt.Errorf("failed to create output file: %w", err)
@@ -164,19 +184,25 @@ func generateHTMLReport(jsonFilePath, outputPath string, deps []ActionDependency
 	`, string(jsonData)))
 
 	if err := tmpl.Execute(f, struct {
-		Repos               []*RepoSummary
-		JSONData            template.JS
-		InputFile           string
-		ExternalWithHash    int
-		ExternalWithoutHash int
-		GeneratedTime       string
+		Repos                []*RepoSummary
+		JSONData             template.JS
+		InputFile            string
+		ExternalWithHash     int
+		ExternalWithoutHash  int
+		ReposWithWarnings    int
+		ReposWithoutWarnings int
+		TotalRepos           int
+		GeneratedTime        string
 	}{
-		Repos:               repos,
-		JSONData:            template.JS(embedData),
-		InputFile:           filepath.Base(jsonFilePath),
-		ExternalWithHash:    externalWithHash,
-		ExternalWithoutHash: externalWithoutHash,
-		GeneratedTime:       generatedTime,
+		Repos:                repos,
+		JSONData:             template.JS(embedData),
+		InputFile:            filepath.Base(jsonFilePath),
+		ExternalWithHash:     externalWithHash,
+		ExternalWithoutHash:  externalWithoutHash,
+		ReposWithWarnings:    reposWithWarnings,
+		ReposWithoutWarnings: reposWithoutWarnings,
+		TotalRepos:           len(repos),
+		GeneratedTime:        generatedTime,
 	}); err != nil {
 		return fmt.Errorf("failed to generate report: %w", err)
 	}
@@ -222,14 +248,22 @@ const reportTemplate = `
         <!-- Summary Section -->
         <div class="bg-white rounded-lg shadow-md p-6 mb-6">
             <h2 class="text-xl font-semibold mb-4">Summary</h2>
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div class="bg-green-50 p-4 rounded-lg">
-                    <div class="text-3xl font-bold text-green-700">{{.ExternalWithHash}}</div>
-                    <div class="text-sm text-green-600">External dependencies with hashed version</div>
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <div class="bg-blue-50 p-4 rounded-lg">
+                    <div class="text-3xl font-bold text-blue-700">{{.TotalRepos}}</div>
+                    <div class="text-sm text-blue-600">Total repositories</div>
                 </div>
                 <div class="bg-red-50 p-4 rounded-lg">
-                    <div class="text-3xl font-bold text-red-700">{{.ExternalWithoutHash}}</div>
-                    <div class="text-sm text-red-600">External dependencies without hashed version</div>
+                    <div class="text-3xl font-bold text-red-700">{{.ReposWithWarnings}}</div>
+                    <div class="text-sm text-red-600">Repositories with warnings</div>
+                </div>
+                <div class="bg-green-50 p-4 rounded-lg">
+                    <div class="text-3xl font-bold text-green-700">{{.ReposWithoutWarnings}}</div>
+                    <div class="text-sm text-green-600">Repositories without warnings</div>
+                </div>
+                <div class="bg-gray-50 p-4 rounded-lg">
+                    <div class="text-3xl font-bold text-gray-700">{{.ExternalWithoutHash}}/{{add .ExternalWithHash .ExternalWithoutHash}}</div>
+                    <div class="text-sm text-gray-600">GitHub Actions without pinned commit version</div>
                 </div>
             </div>
         </div>
