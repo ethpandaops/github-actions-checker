@@ -20,6 +20,7 @@ var (
 	OrgName         string
 	RepoName        string
 	OutputDir       string
+	OutputFile      string
 	IncludeArchived bool
 	rootCmd         = &cobra.Command{
 		Use:   "action-deps",
@@ -39,9 +40,8 @@ func init() {
 	rootCmd.Flags().StringVarP(&OrgName, "org", "o", "", "GitHub organization name")
 	rootCmd.Flags().StringVarP(&RepoName, "repo", "r", "", "Specific repository to scan (format: owner/repo)")
 	rootCmd.Flags().StringVarP(&OutputDir, "output-dir", "d", "reports", "Directory to write output files to")
+	rootCmd.Flags().StringVarP(&OutputFile, "output-file", "f", "", "Output file name (without extension)")
 	rootCmd.Flags().BoolVarP(&IncludeArchived, "include-archived", "a", false, "Include archived repositories in scan")
-
-	// The report command will be automatically registered via its init() function
 }
 
 type ActionDependency struct {
@@ -123,22 +123,42 @@ func run(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to marshal JSON: %w", err)
 	}
 
-	outputFile := fmt.Sprintf("%s-actions.json", strings.ReplaceAll(RepoName, "/", "-"))
-	if OrgName != "" {
-		outputFile = fmt.Sprintf("%s-actions.json", OrgName)
+	// Determine output file name
+	outputFile := ""
+	if OutputFile != "" {
+		outputFile = OutputFile
+	} else if RepoName != "" {
+		outputFile = strings.ReplaceAll(RepoName, "/", "-")
+	} else if OrgName != "" {
+		outputFile = OrgName
 	}
+
+	jsonOutputFile := fmt.Sprintf("%s.json", outputFile)
 
 	// Create output directory if it doesn't exist
 	if err := os.MkdirAll(OutputDir, 0755); err != nil {
 		return fmt.Errorf("failed to create output directory: %w", err)
 	}
 
-	outputPath := filepath.Join(OutputDir, outputFile)
+	outputPath := filepath.Join(OutputDir, jsonOutputFile)
 	if err := os.WriteFile(outputPath, output, 0644); err != nil {
 		return fmt.Errorf("failed to write output file: %w", err)
 	}
 
 	fmt.Printf("Results written to %s\n", outputPath)
+
+	// Generate HTML report automatically
+	htmlOutputFile := strings.TrimSuffix(jsonOutputFile, ".json") + ".html"
+	htmlOutputPath := filepath.Join(OutputDir, htmlOutputFile)
+
+	// Format the current time as a string
+	generatedTime := time.Now().Format("Jan 02, 2006 15:04:05")
+
+	if err := generateHTMLReport(outputPath, htmlOutputPath, allDeps, generatedTime); err != nil {
+		return fmt.Errorf("failed to generate HTML report: %w", err)
+	}
+
+	fmt.Printf("HTML report generated at %s\n", htmlOutputPath)
 	return nil
 }
 

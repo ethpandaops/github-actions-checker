@@ -30,18 +30,12 @@ Using version tags like v1 or v2 in GitHub Actions can be risky as the action ma
 ## Quickstart using Docker
 
 ```sh
-# Build the docker image
-docker build -t action-deps .
-
-# Scan a specific repository and save the report to the current directory
+# Scan a specific repository and save the report to the current directory under ./reports
 docker run --rm -it \
   -e GITHUB_TOKEN=$(gh auth token) \
   -v $PWD/reports:/reports \
-  action-deps --repo ethpandaops/ethereum-helm-charts --output-dir /reports
-
-# Generate an HTML report from JSON output
-docker run --rm -it -v $PWD/reports:/reports \
-  action-deps report -i /reports/ethpandaops-ethereum-helm-charts-actions.json --output-dir /reports
+  ghcr.io/ethpandaops/github-actions-checker:master \
+  --repo ethpandaops/ethereum-helm-charts --output-dir /reports
 ```
 
 ## Installation
@@ -83,9 +77,9 @@ export GITHUB_TOKEN="$(gh auth token)"
 ./action-deps --org ethpandaops --include-archived
 ```
 
-#### Generate an HTML report from JSON output
+#### Generate an HTML report from JSON output (Useful for just debugging the HTML report)
 ```
-./action-deps report -i reports/ethpandaops-ethereum-helm-charts-actions.json --output-dir reports
+./action-deps generate-html -i reports/ethpandaops-ethereum-helm-charts-actions.json --output-dir reports
 ```
 
 ## License

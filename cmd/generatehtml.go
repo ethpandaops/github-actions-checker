@@ -15,9 +15,9 @@ import (
 var (
 	inputFile string
 	reportCmd = &cobra.Command{
-		Use:   "report",
+		Use:   "generate-html",
 		Short: "Generate HTML report from actions JSON file",
-		RunE:  generateReport,
+		RunE:  generateHTMLFromJson,
 	}
 )
 
@@ -38,15 +38,9 @@ type WorkflowSummary struct {
 	Branch  string
 }
 
-func generateReport(cmd *cobra.Command, args []string) error {
+func generateHTMLFromJson(cmd *cobra.Command, args []string) error {
 	if inputFile == "" {
 		return fmt.Errorf("input file is required")
-	}
-
-	// Read and parse JSON file
-	data, err := os.ReadFile(inputFile)
-	if err != nil {
-		return fmt.Errorf("failed to read input file: %w", err)
 	}
 
 	// Get file info to extract timestamp
@@ -56,11 +50,36 @@ func generateReport(cmd *cobra.Command, args []string) error {
 	}
 	generatedTime := fileInfo.ModTime().Format("Jan 02, 2006 15:04:05")
 
+	// Read JSON file
+	data, err := os.ReadFile(inputFile)
+	if err != nil {
+		return fmt.Errorf("failed to read input file: %w", err)
+	}
+
 	var deps []ActionDependency
 	if err := json.Unmarshal(data, &deps); err != nil {
 		return fmt.Errorf("failed to parse JSON: %w", err)
 	}
 
+	// Create output directory if it doesn't exist
+	if err := os.MkdirAll(OutputDir, 0755); err != nil {
+		return fmt.Errorf("failed to create output directory: %w", err)
+	}
+
+	// Generate HTML report
+	outputFile := strings.TrimSuffix(filepath.Base(inputFile), ".json") + ".html"
+	outputPath := filepath.Join(OutputDir, outputFile)
+
+	if err := generateHTMLReport(inputFile, outputPath, deps, generatedTime); err != nil {
+		return err
+	}
+
+	fmt.Printf("Report generated at %s\n", outputPath)
+	return nil
+}
+
+// Create a shared function for HTML report generation
+func generateHTMLReport(jsonFilePath, outputPath string, deps []ActionDependency, generatedTime string) error {
 	// Calculate statistics
 	var externalWithHash, externalWithoutHash int
 	for _, dep := range deps {
@@ -104,15 +123,14 @@ func generateReport(cmd *cobra.Command, args []string) error {
 		return repos[i].Name < repos[j].Name
 	})
 
-	// Create output directory if it doesn't exist
-	if err := os.MkdirAll(OutputDir, 0755); err != nil {
-		return fmt.Errorf("failed to create output directory: %w", err)
+	// Read the JSON data for embedding in the report
+	jsonData, err := os.ReadFile(jsonFilePath)
+	if err != nil {
+		return fmt.Errorf("failed to read JSON file: %w", err)
 	}
 
 	// Generate HTML report
 	tmpl := template.Must(template.New("report").Parse(reportTemplate))
-	outputFile := strings.TrimSuffix(filepath.Base(inputFile), ".json") + ".html"
-	outputPath := filepath.Join(OutputDir, outputFile)
 
 	f, err := os.Create(outputPath)
 	if err != nil {
@@ -120,9 +138,9 @@ func generateReport(cmd *cobra.Command, args []string) error {
 	}
 	defer f.Close()
 
-	data = []byte(fmt.Sprintf(`
+	embedData := []byte(fmt.Sprintf(`
 	const reportData = %s;
-	`, string(data)))
+	`, string(jsonData)))
 
 	if err := tmpl.Execute(f, struct {
 		Repos               []*RepoSummary
@@ -133,8 +151,8 @@ func generateReport(cmd *cobra.Command, args []string) error {
 		GeneratedTime       string
 	}{
 		Repos:               repos,
-		JSONData:            template.JS(data),
-		InputFile:           filepath.Base(inputFile),
+		JSONData:            template.JS(embedData),
+		InputFile:           filepath.Base(jsonFilePath),
 		ExternalWithHash:    externalWithHash,
 		ExternalWithoutHash: externalWithoutHash,
 		GeneratedTime:       generatedTime,
@@ -142,7 +160,6 @@ func generateReport(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to generate report: %w", err)
 	}
 
-	fmt.Printf("Report generated at %s\n", outputPath)
 	return nil
 }
 
