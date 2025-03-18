@@ -204,7 +204,40 @@ func processRepoWithBranch(ctx context.Context, client *github.Client, owner, re
 		changed := false
 
 		for _, action := range dep.Actions {
-			if action.Type == "external" && !action.IsHashedVersion && action.RecommendedHash != "" {
+			if action.Type == "external" && action.IsHashedVersion {
+				// Make sure that the version exists as a comment in the line
+				// Replace any existing comment with the correct version
+				pattern := fmt.Sprintf(`uses:\s+%s@%s(?:\s*#.*)?`,
+					regexp.QuoteMeta(action.Name),
+					regexp.QuoteMeta(action.Version))
+				replacement := fmt.Sprintf("uses: %s@%s # %s",
+					action.Name,
+					action.Version,
+					action.VersionHashReverseLookupVersion)
+
+				re, err := regexp.Compile(pattern)
+				if err != nil {
+					logrus.WithFields(logrus.Fields{
+						"pattern": pattern,
+						"error":   err,
+					}).Error("Failed to compile regex")
+					continue
+				}
+
+				// Replace the line completely, including any existing comment
+				if re.MatchString(updatedContent) {
+					newContent := re.ReplaceAllString(updatedContent, replacement)
+					if newContent != updatedContent {
+						updatedContent = newContent
+						changed = true
+						logrus.WithFields(logrus.Fields{
+							"action":   action.Name,
+							"version":  action.Version,
+							"workflow": workflowPath,
+						}).Info("Updating version comment for hashed action")
+					}
+				}
+			} else if action.Type == "external" && !action.IsHashedVersion && action.RecommendedHash != "" {
 				// Create a pattern to match the action reference
 				pattern := fmt.Sprintf(`uses:\s+%s@%s\b`, regexp.QuoteMeta(action.Name), regexp.QuoteMeta(action.Version))
 				replacement := fmt.Sprintf("uses: %s@%s # %s", action.Name, action.RecommendedHash, action.RecommendedHashReverseLookupVersion)
