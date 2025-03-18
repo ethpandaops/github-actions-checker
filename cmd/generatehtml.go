@@ -83,6 +83,10 @@ func generateHTMLFromJson(cmd *cobra.Command, args []string) error {
 func generateHTMLReport(jsonFilePath, outputPath string, deps []ActionDependency, generatedTime string) error {
 	// Calculate statistics
 	var externalWithHash, externalWithoutHash int
+
+	// Track external actions usage
+	actionUsage := make(map[string]map[string]int) // action name -> version -> count
+
 	for _, dep := range deps {
 		for _, action := range dep.Actions {
 			if action.Type == "external" {
@@ -91,9 +95,69 @@ func generateHTMLReport(jsonFilePath, outputPath string, deps []ActionDependency
 				} else {
 					externalWithoutHash++
 				}
+
+				// Track action usage
+				if _, exists := actionUsage[action.Name]; !exists {
+					actionUsage[action.Name] = make(map[string]int)
+				}
+				actionUsage[action.Name][action.Version]++
 			}
 		}
 	}
+
+	// Convert action usage map to a sorted slice for the template
+	type ActionVersionUsage struct {
+		Version              string
+		HumanReadableVersion string
+		Count                int
+	}
+
+	type ActionUsageSummary struct {
+		Name     string
+		Versions []ActionVersionUsage
+		Count    int
+	}
+
+	actionSummaries := make([]ActionUsageSummary, 0, len(actionUsage))
+	for name, versions := range actionUsage {
+		totalCount := 0
+		versionUsages := make([]ActionVersionUsage, 0, len(versions))
+
+		// Find human-readable versions for each hash
+		versionToHumanReadable := make(map[string]string)
+		for _, dep := range deps {
+			for _, action := range dep.Actions {
+				if action.Name == name && action.VersionHashReverseLookupVersion != "" {
+					versionToHumanReadable[action.Version] = action.VersionHashReverseLookupVersion
+				}
+			}
+		}
+
+		for version, count := range versions {
+			versionUsages = append(versionUsages, ActionVersionUsage{
+				Version:              version,
+				HumanReadableVersion: versionToHumanReadable[version],
+				Count:                count,
+			})
+			totalCount += count
+		}
+
+		// Sort versions by usage count (descending)
+		sort.Slice(versionUsages, func(i, j int) bool {
+			return versionUsages[i].Count > versionUsages[j].Count
+		})
+
+		actionSummaries = append(actionSummaries, ActionUsageSummary{
+			Name:     name,
+			Versions: versionUsages,
+			Count:    totalCount,
+		})
+	}
+
+	// Sort actions by total usage count (descending)
+	sort.Slice(actionSummaries, func(i, j int) bool {
+		return actionSummaries[i].Count > actionSummaries[j].Count
+	})
 
 	// Organize data by repository
 	repoMap := make(map[string]*RepoSummary)
@@ -185,6 +249,7 @@ func generateHTMLReport(jsonFilePath, outputPath string, deps []ActionDependency
 
 	if err := tmpl.Execute(f, struct {
 		Repos                []*RepoSummary
+		ActionSummaries      []ActionUsageSummary
 		JSONData             template.JS
 		InputFile            string
 		ExternalWithHash     int
@@ -195,6 +260,7 @@ func generateHTMLReport(jsonFilePath, outputPath string, deps []ActionDependency
 		GeneratedTime        string
 	}{
 		Repos:                repos,
+		ActionSummaries:      actionSummaries,
 		JSONData:             template.JS(embedData),
 		InputFile:            filepath.Base(jsonFilePath),
 		ExternalWithHash:     externalWithHash,
@@ -264,6 +330,59 @@ const reportTemplate = `
                 <div class="bg-gray-50 p-4 rounded-lg">
                     <div class="text-3xl font-bold text-gray-700">{{.ExternalWithoutHash}}/{{add .ExternalWithHash .ExternalWithoutHash}}</div>
                     <div class="text-sm text-gray-600">GitHub Actions without pinned commit version</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Actions Usage Summary Section -->
+        <div class="bg-white rounded-lg shadow-md p-6 mb-6 collapsible-section expanded">
+            <div class="flex justify-between items-center cursor-pointer" onclick="toggleCollapse(this.parentElement)">
+                <h2 class="text-xl font-semibold">Actions usage summary</h2>
+                <svg class="chevron w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
+                </svg>
+            </div>
+            <div class="collapsible-content">
+                <div class="mt-4 overflow-x-auto">
+                    <table class="min-w-full">
+                        <thead>
+                            <tr class="bg-gray-50">
+                                <th class="px-4 py-2 text-left text-sm font-medium text-gray-500">Action</th>
+                                <th class="px-4 py-2 text-center text-sm font-medium text-gray-500 w-24">Total Usage</th>
+                                <th class="px-4 py-2 text-right text-sm font-medium text-gray-500 w-64">Versions (Usage Count)</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-gray-200">
+                            {{range .ActionSummaries}}
+                            <tr class="hover:bg-gray-50">
+                                <td class="px-4 py-2 text-sm">
+                                    <a href="https://github.com/{{.Name}}"
+                                       target="_blank"
+                                       class="text-blue-600 hover:text-blue-800">
+                                        {{.Name}}
+                                    </a>
+                                </td>
+                                <td class="px-4 py-2 text-sm text-center font-semibold">{{.Count}}</td>
+                                <td class="px-4 py-2 text-sm">
+                                    <div class="space-y-1">
+																		{{$actionName := .Name}}
+                                        {{range .Versions}}
+                                        <div class="px-2 py-1 {{if not (eq (len .Version) 40)}}bg-red-100{{else}}bg-blue-50{{end}} rounded text-xs flex items-center">
+                                            <span class="font-mono">
+																								<a href="https://github.com/{{$actionName}}/commit/{{.Version}}" target="_blank" class="text-blue-600 hover:text-blue-800">{{.Version}}</a>
+																						</span>
+                                            {{if .HumanReadableVersion}}
+                                                <span class="ml-2 text-gray-600">[{{.HumanReadableVersion}}]</span>
+                                            {{end}}
+                                            <span class="ml-auto font-semibold">{{.Count}}</span>
+                                        </div>
+                                        {{end}}
+                                    </div>
+                                </td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
                 </div>
             </div>
         </div>
