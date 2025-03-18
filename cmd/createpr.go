@@ -207,7 +207,7 @@ func processRepoWithBranch(ctx context.Context, client *github.Client, owner, re
 			if action.Type == "external" && !action.IsHashedVersion && action.RecommendedHash != "" {
 				// Create a pattern to match the action reference
 				pattern := fmt.Sprintf(`uses:\s+%s@%s\b`, regexp.QuoteMeta(action.Name), regexp.QuoteMeta(action.Version))
-				replacement := fmt.Sprintf("uses: %s@%s # %s", action.Name, action.RecommendedHash, action.Version)
+				replacement := fmt.Sprintf("uses: %s@%s # %s", action.Name, action.RecommendedHash, action.RecommendedHashReverseLookupVersion)
 
 				re, err := regexp.Compile(pattern)
 				if err != nil {

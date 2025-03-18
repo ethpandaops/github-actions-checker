@@ -303,7 +303,7 @@ const reportTemplate = `
                                     <thead>
                                         <tr class="bg-gray-50">
                                             <th class="px-4 py-2 text-left text-sm font-medium text-gray-500">Action</th>
-                                            <th class="px-4 py-2 text-right text-sm font-medium text-gray-500">Recommended Hash</th>
+                                            <th class="px-4 py-2 text-right text-sm font-medium text-gray-500">Recommended Version</th>
                                             <th class="px-4 py-2 text-right text-sm font-medium text-gray-500 w-32">Version</th>
                                             <th class="px-4 py-2 text-right text-sm font-medium text-gray-500 w-24">Type</th>
                                         </tr>
@@ -329,6 +329,9 @@ const reportTemplate = `
                                                 {{if and (eq .Type "external") (not .IsHashedVersion) .RecommendedHash}}
                                                     <span class="text-red-600">{{.RecommendedHash}}</span>
                                                 {{end}}
+                                                {{if and (eq .Type "external") (not .IsHashedVersion) .RecommendedHashReverseLookupVersion}}
+                                                    <div class="text-xs text-gray-500">({{.RecommendedHashReverseLookupVersion}})</div>
+                                                {{end}}
                                             </td>
                                             <td class="px-4 py-2 text-sm font-mono text-right">
                                                 <span class="{{if .IsHashedVersion}}text-green-600{{end}}">
@@ -336,6 +339,9 @@ const reportTemplate = `
                                                 </span>
                                                 {{if and (eq .Type "external") (not .IsHashedVersion)}}
                                                     <span class="ml-2 text-amber-500 cursor-help" title="This version is not using a fixed git commit hash and could be vulnerable in the future">⚠️</span>
+                                                {{end}}
+                                                {{if and (eq .Type "external") .IsHashedVersion .VersionHashReverseLookupVersion}}
+                                                    <div class="text-xs text-gray-500">({{.VersionHashReverseLookupVersion}})</div>
                                                 {{end}}
                                             </td>
                                             <td class="px-4 py-2 text-sm text-right">

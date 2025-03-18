@@ -54,11 +54,13 @@ type ActionDependency struct {
 }
 
 type ActionDetails struct {
-	Name            string `json:"name"`
-	Version         string `json:"version"`
-	Type            string `json:"type"` // "internal" or "external"
-	IsHashedVersion bool   `json:"is_hashed_version"`
-	RecommendedHash string `json:"recommended_hash,omitempty"`
+	Name                                string `json:"name"`
+	Version                             string `json:"version"`
+	VersionHashReverseLookupVersion     string `json:"version_reverse_lookup,omitempty"`
+	Type                                string `json:"type"` // "internal" or "external"
+	IsHashedVersion                     bool   `json:"is_hashed_version"`
+	RecommendedHash                     string `json:"recommended_hash,omitempty"`
+	RecommendedHashReverseLookupVersion string `json:"recommended_hash_reverse_lookup,omitempty"`
 }
 
 func run(cmd *cobra.Command, args []string) error {
@@ -85,7 +87,7 @@ func run(cmd *cobra.Command, args []string) error {
 		opt := &github.RepositoryListByOrgOptions{
 			Type: "public",
 			ListOptions: github.ListOptions{
-				PerPage: 100,
+				PerPage: 500,
 			},
 		}
 
@@ -339,6 +341,44 @@ func getCommitHashForRef(ctx context.Context, client *github.Client, owner, repo
 	return "", fmt.Errorf("could not find commit hash for ref %s", ref)
 }
 
+// New function to get human-readable version for a commit hash
+func getHumanReadableVersion(ctx context.Context, client *github.Client, owner, repo, commitHash string) string {
+	// Try to find a tag pointing to this commit
+	tags, _, err := client.Repositories.ListTags(ctx, owner, repo, &github.ListOptions{PerPage: 500})
+	if err == nil {
+		for _, tag := range tags {
+			if tag.Commit != nil && tag.Commit.SHA != nil && *tag.Commit.SHA == commitHash {
+				return *tag.Name
+			}
+		}
+	}
+
+	// If no tag found, try to find the branch and use short hash
+	branches, _, err := client.Repositories.ListBranches(ctx, owner, repo, &github.BranchListOptions{ListOptions: github.ListOptions{PerPage: 500}})
+	if err == nil {
+		for _, branch := range branches {
+			if branch.Commit != nil && branch.Commit.SHA != nil {
+				// Get the commit to check if it's in the branch history
+				commit, _, err := client.Repositories.GetCommit(ctx, owner, repo, commitHash, &github.ListOptions{})
+				if err == nil && commit != nil && branch.Name != nil {
+					// Return branch name + short hash
+					shortHash := commitHash
+					if len(shortHash) > 7 {
+						shortHash = shortHash[:7]
+					}
+					return fmt.Sprintf("%s-%s", *branch.Name, shortHash)
+				}
+			}
+		}
+	}
+
+	// If all else fails, just return the short hash
+	if len(commitHash) > 7 {
+		return commitHash[:7]
+	}
+	return commitHash
+}
+
 func extractActions(content string) []ActionDetails {
 	var actions []ActionDetails
 	lines := strings.Split(content, "\n")
@@ -373,6 +413,8 @@ func extractActions(content string) []ActionDetails {
 			// Check if version is a commit hash (40 character hex string)
 			isHashed := false
 			recommendedHash := ""
+			hashReverseLookupVersion := ""
+			recommendedHashReverseLookupVersion := ""
 			if actionType == "external" && version != "" {
 				// Strip comments from version
 				versionTrimmed := version
@@ -384,6 +426,24 @@ func extractActions(content string) []ActionDetails {
 					if _, err := hex.DecodeString(versionTrimmed); err == nil {
 						isHashed = true
 						recommendedHash = versionTrimmed
+
+						// Get human-readable version for the hash
+						if strings.Contains(name, "/") {
+							parts := strings.Split(name, "/")
+							if len(parts) >= 2 {
+								actionOwner := parts[0]
+								actionRepo := parts[1]
+
+								ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+								defer cancel()
+
+								ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: os.Getenv("GITHUB_TOKEN")})
+								tc := oauth2.NewClient(ctx, ts)
+								client := github.NewClient(tc)
+
+								hashReverseLookupVersion = getHumanReadableVersion(ctx, client, actionOwner, actionRepo, versionTrimmed)
+							}
+						}
 					}
 				} else {
 					// Get commit hash from remote repository depending on the version
@@ -406,6 +466,7 @@ func extractActions(content string) []ActionDetails {
 							hash, err := getCommitHashForRef(ctx, client, actionOwner, actionRepo, versionTrimmed)
 							if err == nil {
 								recommendedHash = hash
+								recommendedHashReverseLookupVersion = getHumanReadableVersion(ctx, client, actionOwner, actionRepo, recommendedHash)
 							} else {
 								logrus.WithFields(logrus.Fields{
 									"action":  name,
@@ -419,11 +480,13 @@ func extractActions(content string) []ActionDetails {
 			}
 
 			actions = append(actions, ActionDetails{
-				Name:            name,
-				Version:         version,
-				Type:            actionType,
-				IsHashedVersion: isHashed,
-				RecommendedHash: recommendedHash,
+				Name:                                name,
+				Version:                             version,
+				VersionHashReverseLookupVersion:     hashReverseLookupVersion,
+				Type:                                actionType,
+				IsHashedVersion:                     isHashed,
+				RecommendedHash:                     recommendedHash,
+				RecommendedHashReverseLookupVersion: recommendedHashReverseLookupVersion,
 			})
 		}
 	}
