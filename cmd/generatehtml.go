@@ -330,7 +330,7 @@ const reportTemplate = `
                                                     <span class="text-red-600">{{.RecommendedHash}}</span>
                                                 {{end}}
                                             </td>
-                                            <td class="px-4 py-2 text-sm text-right">
+                                            <td class="px-4 py-2 text-sm font-mono text-right">
                                                 <span class="{{if .IsHashedVersion}}text-green-600{{end}}">
                                                     {{.Version}}
                                                 </span>
