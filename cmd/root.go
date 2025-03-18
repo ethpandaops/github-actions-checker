@@ -333,22 +333,48 @@ func getCommitHashForRef(ctx context.Context, client *github.Client, owner, repo
 	// First try to get the reference directly
 	reference, _, err := client.Git.GetRef(ctx, owner, repo, "refs/"+ref)
 	if err == nil && reference != nil && reference.Object != nil {
-		return reference.Object.GetSHA(), nil
+		// Verify the commit exists
+		commit, _, commitErr := client.Repositories.GetCommit(ctx, owner, repo, reference.Object.GetSHA(), nil)
+		if commitErr == nil && commit != nil && commit.SHA != nil {
+			return *commit.SHA, nil
+		}
 	}
 
 	// If that fails, try to get it as a tag
 	reference, _, err = client.Git.GetRef(ctx, owner, repo, "refs/tags/"+ref)
 	if err == nil && reference != nil && reference.Object != nil {
-		return reference.Object.GetSHA(), nil
+		// For annotated tags, we need to resolve the tag object to get the actual commit
+		if reference.Object.GetType() == "tag" {
+			tag, _, tagErr := client.Git.GetTag(ctx, owner, repo, reference.Object.GetSHA())
+			if tagErr == nil && tag != nil && tag.Object != nil {
+				return tag.Object.GetSHA(), nil
+			}
+		}
+
+		// Verify the commit exists
+		commit, _, commitErr := client.Repositories.GetCommit(ctx, owner, repo, reference.Object.GetSHA(), nil)
+		if commitErr == nil && commit != nil && commit.SHA != nil {
+			return *commit.SHA, nil
+		}
 	}
 
 	// If that fails, try to get it as a branch
 	reference, _, err = client.Git.GetRef(ctx, owner, repo, "refs/heads/"+ref)
 	if err == nil && reference != nil && reference.Object != nil {
-		return reference.Object.GetSHA(), nil
+		// Verify the commit exists
+		commit, _, commitErr := client.Repositories.GetCommit(ctx, owner, repo, reference.Object.GetSHA(), nil)
+		if commitErr == nil && commit != nil && commit.SHA != nil {
+			return *commit.SHA, nil
+		}
 	}
 
-	return "", fmt.Errorf("could not find commit hash for ref %s", ref)
+	// As a last resort, try to get the commit directly
+	commit, _, err := client.Repositories.GetCommit(ctx, owner, repo, ref, nil)
+	if err == nil && commit != nil && commit.SHA != nil {
+		return *commit.SHA, nil
+	}
+
+	return "", fmt.Errorf("could not find valid commit hash for ref %s", ref)
 }
 
 // New function to get human-readable version for a commit hash
