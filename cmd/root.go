@@ -23,6 +23,7 @@ var (
 	OutputFile      string
 	IncludeArchived bool
 	IncludeForked   bool
+	LogLevel        string
 	rootCmd         = &cobra.Command{
 		Use:   "action-deps",
 		Short: "Analyze GitHub Action dependencies in an organization or repository",
@@ -44,6 +45,7 @@ func init() {
 	rootCmd.Flags().StringVarP(&OutputFile, "output-file", "f", "", "Output file name (without extension)")
 	rootCmd.Flags().BoolVarP(&IncludeArchived, "include-archived", "a", false, "Include archived repositories in scan")
 	rootCmd.Flags().BoolVarP(&IncludeForked, "include-forked", "", false, "Include forked repositories in scan")
+	rootCmd.Flags().StringVarP(&LogLevel, "log-level", "l", "info", "Set log level (debug, info, warn, error, fatal, panic)")
 }
 
 type ActionDependency struct {
@@ -64,6 +66,14 @@ type ActionDetails struct {
 }
 
 func run(cmd *cobra.Command, args []string) error {
+	// Set log level based on log-level flag or debug flag
+
+	level, err := logrus.ParseLevel(LogLevel)
+	if err != nil {
+		return fmt.Errorf("invalid log level: %w", err)
+	}
+	logrus.SetLevel(level)
+
 	token := os.Getenv("GITHUB_TOKEN")
 	if token == "" {
 		return fmt.Errorf("GITHUB_TOKEN environment variable is required")
@@ -463,10 +473,21 @@ func extractActions(content string) []ActionDetails {
 							tc := oauth2.NewClient(ctx, ts)
 							client := github.NewClient(tc)
 
+							logrus.WithFields(logrus.Fields{
+								"action":  name,
+								"version": versionTrimmed,
+							}).Debug("Getting commit hash for version")
+
 							hash, err := getCommitHashForRef(ctx, client, actionOwner, actionRepo, versionTrimmed)
 							if err == nil {
 								recommendedHash = hash
 								recommendedHashReverseLookupVersion = getHumanReadableVersion(ctx, client, actionOwner, actionRepo, recommendedHash)
+								logrus.WithFields(logrus.Fields{
+									"action":                 name,
+									"version":                versionTrimmed,
+									"hash":                   hash,
+									"human_readable_version": recommendedHashReverseLookupVersion,
+								}).Debug("Got commit hash for version")
 							} else {
 								logrus.WithFields(logrus.Fields{
 									"action":  name,
