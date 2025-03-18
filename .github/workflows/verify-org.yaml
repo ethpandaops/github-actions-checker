@@ -24,7 +24,7 @@ jobs:
   analyze:
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}/reports/${{ steps.parse.outputs.org }}.html
+      url: ${{ steps.deployment.outputs.page_url }}${{ steps.parse.outputs.org }}.html
     runs-on: ubuntu-latest
     steps:
       - id: parse
