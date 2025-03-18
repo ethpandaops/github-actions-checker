@@ -267,6 +267,12 @@ func getWorkflowDependencies(ctx context.Context, client *github.Client, owner, 
 						actionYamlPath = strings.TrimSuffix(actionYamlPath, ".yml") + ".yaml"
 						localActions, subDeps = checkAndProcessWorkflow(actionYamlPath)
 					}
+					if localActions == nil && subDeps == nil || len(localActions) == 0 && len(subDeps) == 0 {
+						logrus.WithFields(logrus.Fields{
+							"repo": fmt.Sprintf("%s/%s", owner, repo),
+							"path": actionPath,
+						}).Error("Failed to process local action")
+					}
 
 					if localActions != nil {
 						localDeps = append(localDeps, ActionDependency{
@@ -297,6 +303,7 @@ func getWorkflowDependencies(ctx context.Context, client *github.Client, owner, 
 	}
 
 	for _, entry := range tree.Entries {
+		// Process GitHub workflow files
 		if strings.HasPrefix(entry.GetPath(), ".github/workflows/") && isWorkflowFile(entry.GetPath()) {
 			logrus.WithFields(logrus.Fields{
 				"repo":     fmt.Sprintf("%s/%s", owner, repo),
@@ -310,6 +317,60 @@ func getWorkflowDependencies(ctx context.Context, client *github.Client, owner, 
 					"workflow":     entry.GetPath(),
 					"action_count": len(actions),
 				}).Info("Found actions in workflow")
+				deps = append(deps, ActionDependency{
+					Repo:     fmt.Sprintf("%s/%s", owner, repo),
+					Actions:  actions,
+					Workflow: entry.GetPath(),
+					Branch:   defaultBranch,
+				})
+				deps = append(deps, localDeps...)
+			}
+		}
+
+		// Also process root level action.yml or action.yaml files
+		if entry.GetPath() == "action.yml" || entry.GetPath() == "action.yaml" {
+			logrus.WithFields(logrus.Fields{
+				"repo":     fmt.Sprintf("%s/%s", owner, repo),
+				"workflow": entry.GetPath(),
+			}).Info("Processing root action file")
+
+			actions, localDeps := checkAndProcessWorkflow(entry.GetPath())
+			if len(actions) > 0 {
+				logrus.WithFields(logrus.Fields{
+					"repo":         fmt.Sprintf("%s/%s", owner, repo),
+					"workflow":     entry.GetPath(),
+					"action_count": len(actions),
+				}).Info("Found actions in root action file")
+				deps = append(deps, ActionDependency{
+					Repo:     fmt.Sprintf("%s/%s", owner, repo),
+					Actions:  actions,
+					Workflow: entry.GetPath(),
+					Branch:   defaultBranch,
+				})
+				deps = append(deps, localDeps...)
+			}
+		}
+
+		// Process action.yml or action.yaml files in .github directory and subdirectories
+		if strings.HasPrefix(entry.GetPath(), ".github/") &&
+			!strings.HasPrefix(entry.GetPath(), ".github/workflows/") &&
+			(strings.HasSuffix(entry.GetPath(), "/action.yml") ||
+				strings.HasSuffix(entry.GetPath(), "/action.yaml") ||
+				entry.GetPath() == ".github/action.yml" ||
+				entry.GetPath() == ".github/action.yaml") {
+
+			logrus.WithFields(logrus.Fields{
+				"repo":     fmt.Sprintf("%s/%s", owner, repo),
+				"workflow": entry.GetPath(),
+			}).Info("Processing .github directory action file")
+
+			actions, localDeps := checkAndProcessWorkflow(entry.GetPath())
+			if len(actions) > 0 {
+				logrus.WithFields(logrus.Fields{
+					"repo":         fmt.Sprintf("%s/%s", owner, repo),
+					"workflow":     entry.GetPath(),
+					"action_count": len(actions),
+				}).Info("Found actions in .github directory action file")
 				deps = append(deps, ActionDependency{
 					Repo:     fmt.Sprintf("%s/%s", owner, repo),
 					Actions:  actions,
