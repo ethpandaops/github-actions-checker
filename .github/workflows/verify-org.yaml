@@ -24,13 +24,13 @@ jobs:
   analyze:
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      url: ${{ steps.deployment.outputs.page_url }}/reports/${{ steps.parse.outputs.org }}.html
     runs-on: ubuntu-latest
     steps:
       - id: parse
         run: |
           DEFAULT_ORG="ethpandaops"
-          echo "default_org=$(echo ${INPUT_ORG:-$DEFAULT_ORG})" >> $GITHUB_OUTPUT
+          echo "org=$(echo ${INPUT_ORG:-$DEFAULT_ORG})" >> $GITHUB_OUTPUT
         env:
           INPUT_ORG: "${{ inputs.org }}"
 
@@ -41,7 +41,7 @@ jobs:
             -e GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }} \
             -v ${{ github.workspace }}/reports:/reports \
             ghcr.io/ethpandaops/github-actions-checker:master \
-            --org ${{ steps.parse.outputs.default_org }} --output-dir /reports
+            --org ${{ steps.parse.outputs.org }} --output-dir /reports
 
       - name: upload
         uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
