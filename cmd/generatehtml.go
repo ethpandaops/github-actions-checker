@@ -332,6 +332,11 @@ const reportTemplate = `
                     <div class="text-sm text-gray-600">GitHub Actions without pinned commit version</div>
                 </div>
             </div>
+            <div class="mt-4 flex justify-end">
+                <button id="expandAllBtn" class="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
+                    Expand All
+                </button>
+            </div>
         </div>
 
         <!-- Actions Usage Summary Section -->
@@ -491,6 +496,21 @@ const reportTemplate = `
         function toggleCollapse(element) {
             element.classList.toggle('expanded');
         }
+
+        document.getElementById('expandAllBtn').addEventListener('click', function() {
+            const sections = document.querySelectorAll('.collapsible-section');
+            const isExpanding = this.textContent.trim() === 'Expand All';
+
+            sections.forEach(section => {
+                if (isExpanding) {
+                    section.classList.add('expanded');
+                } else {
+                    section.classList.remove('expanded');
+                }
+            });
+
+            this.textContent = isExpanding ? 'Collapse All' : 'Expand All';
+        });
     </script>
 </body>
 </html>
