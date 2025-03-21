@@ -23,11 +23,21 @@ var (
 	prBody        string
 	allRepos      bool
 	skipPR        bool
+	dryRun        bool
 	createPRCmd   = &cobra.Command{
 		Use:   "create-pr",
 		Short: "Create a PR to update GitHub Actions to use recommended hashes",
 		RunE:  createPR,
 	}
+)
+
+// ANSI color codes for terminal output
+const (
+	colorReset  = "\033[0m"
+	colorRed    = "\033[31m"
+	colorGreen  = "\033[32m"
+	colorYellow = "\033[33m"
+	colorBlue   = "\033[34m"
 )
 
 func init() {
@@ -38,6 +48,7 @@ func init() {
 	createPRCmd.Flags().StringVarP(&prBody, "body", "", "This PR updates GitHub Actions to use pinned commit hashes for better security.", "PR body")
 	createPRCmd.Flags().BoolVarP(&allRepos, "all", "a", false, "Process all repositories in the input file")
 	createPRCmd.Flags().BoolVarP(&skipPR, "skip-pr", "s", false, "Skip PR creation, only create branch with changes")
+	createPRCmd.Flags().BoolVarP(&dryRun, "dry-run", "d", false, "Show what would be changed without creating branch or PR")
 	createPRCmd.MarkFlagRequired("input")
 	// Don't mark repo as required - we'll check it in the command
 	rootCmd.AddCommand(createPRCmd)
@@ -147,28 +158,30 @@ func processRepo(token string, deps []ActionDependency) error {
 
 // New function to handle the repository processing with a known branch
 func processRepoWithBranch(ctx context.Context, client *github.Client, owner, repo, defaultBranch, branchName string, targetDeps []ActionDependency) error {
-	// Get the reference to the default branch
-	ref, _, err := client.Git.GetRef(ctx, owner, repo, "refs/heads/"+defaultBranch)
-	if err != nil {
-		return fmt.Errorf("failed to get reference: %w", err)
-	}
+	if !dryRun {
+		// Get the reference to the default branch
+		ref, _, err := client.Git.GetRef(ctx, owner, repo, "refs/heads/"+defaultBranch)
+		if err != nil {
+			return fmt.Errorf("failed to get reference: %w", err)
+		}
 
-	// Create a new branch
-	newRef := &github.Reference{
-		Ref:    github.Ptr("refs/heads/" + branchName),
-		Object: &github.GitObject{SHA: ref.Object.SHA},
-	}
+		// Create a new branch
+		newRef := &github.Reference{
+			Ref:    github.Ptr("refs/heads/" + branchName),
+			Object: &github.GitObject{SHA: ref.Object.SHA},
+		}
 
-	_, _, err = client.Git.CreateRef(ctx, owner, repo, newRef)
-	if err != nil {
-		// If branch already exists, try to get it
-		if strings.Contains(err.Error(), "Reference already exists") {
-			_, _, err = client.Git.GetRef(ctx, owner, repo, "refs/heads/"+branchName)
-			if err != nil {
-				return fmt.Errorf("branch already exists but couldn't be retrieved: %w", err)
+		_, _, err = client.Git.CreateRef(ctx, owner, repo, newRef)
+		if err != nil {
+			// If branch already exists, try to get it
+			if strings.Contains(err.Error(), "Reference already exists") {
+				_, _, err = client.Git.GetRef(ctx, owner, repo, "refs/heads/"+branchName)
+				if err != nil {
+					return fmt.Errorf("branch already exists but couldn't be retrieved: %w", err)
+				}
+			} else {
+				return fmt.Errorf("failed to create branch: %w", err)
 			}
-		} else {
-			return fmt.Errorf("failed to create branch: %w", err)
 		}
 	}
 
@@ -178,20 +191,43 @@ func processRepoWithBranch(ctx context.Context, client *github.Client, owner, re
 		workflowPath := dep.Workflow
 
 		// Get the workflow file content
-		fileContent, _, _, err := client.Repositories.GetContents(
-			ctx, owner, repo, workflowPath,
-			&github.RepositoryContentGetOptions{Ref: branchName},
-		)
-		if err != nil {
-			logrus.WithFields(logrus.Fields{
-				"repo":     targetRepo,
-				"workflow": workflowPath,
-				"error":    err,
-			}).Error("Failed to get workflow file")
-			continue
+		var content string
+		var fileContent *github.RepositoryContent
+
+		if dryRun {
+			// In dry run mode, always get from default branch
+			fc, _, _, err := client.Repositories.GetContents(
+				ctx, owner, repo, workflowPath,
+				&github.RepositoryContentGetOptions{Ref: defaultBranch},
+			)
+			if err != nil {
+				logrus.WithFields(logrus.Fields{
+					"repo":     targetRepo,
+					"workflow": workflowPath,
+					"error":    err,
+				}).Error("Failed to get workflow file")
+				continue
+			}
+			fileContent = fc
+		} else {
+			// Normal mode, get from the branch we created
+			fc, _, _, err := client.Repositories.GetContents(
+				ctx, owner, repo, workflowPath,
+				&github.RepositoryContentGetOptions{Ref: branchName},
+			)
+			if err != nil {
+				logrus.WithFields(logrus.Fields{
+					"repo":     targetRepo,
+					"workflow": workflowPath,
+					"error":    err,
+				}).Error("Failed to get workflow file")
+				continue
+			}
+			fileContent = fc
 		}
 
-		content, err := fileContent.GetContent()
+		var err error
+		content, err = fileContent.GetContent()
 		if err != nil {
 			logrus.WithFields(logrus.Fields{
 				"repo":     targetRepo,
@@ -204,62 +240,6 @@ func processRepoWithBranch(ctx context.Context, client *github.Client, owner, re
 		// Update the content with recommended hashes
 		updatedContent := content
 		changed := false
-
-		// Use regex to handle potential whitespace variations
-
-		type SpecialCase struct {
-			Pattern     string
-			Replacement string
-		}
-
-		specialCases := []SpecialCase{
-			{
-				Pattern:     `(\s*)uses: nobrayner/discord-webhook@2f38abc8877c7e8d2b0ded0cfd9599632014279f # 2f38abc`,
-				Replacement: "${1}uses: nobrayner/discord-webhook@1766a33bf571acdcc0678f00da4fb83aad01ebc7 # v1",
-			},
-			{
-				Pattern:     `(\s*)uses: azure/setup-helm@37dd2562cae2f186a3dc13f2bb5d4abe08dbfec4 # 37dd256`,
-				Replacement: "${1}uses: azure/setup-helm@b9e51907a09c216f16ebe8536097933489208112 # v4.3.0",
-			},
-			{
-				Pattern:     `(\s*)uses: crate-ci/typos@0fa392de4a080a8f22469c05415090ee3addf4fb # 0fa392d`,
-				Replacement: "${1}uses: crate-ci/typos@7bc041cbb7ca9167c9e0e4ccbb26f48eb0f9d4e0 # v1.30.2",
-			},
-			{
-				Pattern:     `(\s*)uses: crate-ci/typos@d2c5225afeda85a5abf7a567cdd01c3e329c8ccb # d2c5225`,
-				Replacement: "${1}uses: crate-ci/typos@7bc041cbb7ca9167c9e0e4ccbb26f48eb0f9d4e0 # v1.30.2",
-			},
-			{
-				Pattern:     `(\s*)uses: asdf-vm/actions/setup@833d04dfd3c702c45fa5cbccffdf17a526d40ed2 # 833d04d`,
-				Replacement: "${1}uses: asdf-vm/actions/setup@05e0d2ed97b598bfce82fd30daf324ae0c4570e6 # v3.0.2",
-			},
-			{
-				Pattern:     `(\s*)uses: asdf-vm/actions/setup@7dd2d2ea8a8f52028ca0fdfba65767b8f2db8298 # 7dd2d2e`,
-				Replacement: "${1}uses: asdf-vm/actions/setup@05e0d2ed97b598bfce82fd30daf324ae0c4570e6 # v3.0.2",
-			},
-			{
-				Pattern:     `(\s*)uses: jwalton/gh-docker-logs@eb53a99ccbbb34d4243439c2c3dac3ed78a926ed # eb53a99`,
-				Replacement: "${1}uses: jwalton/gh-docker-logs@2741064ab9d7af54b0b1ffb6076cf64c16f0220e # v2.2.2",
-			},
-			{
-				Pattern:     `(\s*)uses: nrkno/yaml-schema-validator-github-action@4280780c703671c96fcdf493b2e64b16e25c4941 # 4280780`,
-				Replacement: "${1}uses: nrkno/yaml-schema-validator-github-action@54e1fe495e281c451e1ece58808b6fd7710c30ed # v5.1.0",
-			},
-		}
-
-		for _, specialCase := range specialCases {
-			re := regexp.MustCompile(specialCase.Pattern)
-			if re.MatchString(updatedContent) {
-				updatedContent = re.ReplaceAllString(updatedContent, specialCase.Replacement)
-				changed = true
-				logrus.WithFields(logrus.Fields{
-					"action":   "azure/setup-helm",
-					"from":     "37dd2562cae2f186a3dc13f2bb5d4abe08dbfec4",
-					"to":       "b9e51907a09c216f16ebe8536097933489208112",
-					"workflow": workflowPath,
-				}).Info("Updating azure/setup-helm action")
-			}
-		}
 
 		for _, action := range dep.Actions {
 			if action.Type == "external" && action.IsHashedVersion {
@@ -284,10 +264,14 @@ func processRepoWithBranch(ctx context.Context, client *github.Client, owner, re
 
 				// Replace the line completely, including any existing comment
 				if re.MatchString(updatedContent) {
-					newContent := re.ReplaceAllString(updatedContent, replacement)
-					if newContent != updatedContent {
-						updatedContent = newContent
-						changed = true
+					updatedContent = re.ReplaceAllString(updatedContent, replacement)
+					changed = true
+
+					if dryRun {
+						fmt.Printf("%sWould update comment for %s@%s to include version %s in %s%s\n",
+							colorYellow, action.Name, action.Version, action.VersionHashReverseLookupVersion,
+							workflowPath, colorReset)
+					} else {
 						logrus.WithFields(logrus.Fields{
 							"action":   action.Name,
 							"version":  action.Version,
@@ -312,34 +296,48 @@ func processRepoWithBranch(ctx context.Context, client *github.Client, owner, re
 				if re.MatchString(updatedContent) {
 					updatedContent = re.ReplaceAllString(updatedContent, replacement)
 					changed = true
-					logrus.WithFields(logrus.Fields{
-						"action":   action.Name,
-						"from":     action.Version,
-						"to":       action.RecommendedHash,
-						"workflow": workflowPath,
-					}).Info("Updating action")
+
+					if dryRun {
+						fmt.Printf("%sWould update %s from %s to %s (%s) in %s%s\n",
+							colorYellow, action.Name, action.Version, action.RecommendedHash,
+							action.RecommendedHashReverseLookupVersion, workflowPath, colorReset)
+					} else {
+						logrus.WithFields(logrus.Fields{
+							"action":   action.Name,
+							"from":     action.Version,
+							"to":       action.RecommendedHash,
+							"workflow": workflowPath,
+						}).Info("Updating action")
+					}
 				}
 			}
 		}
 
 		// If changes were made, commit the file
 		if changed {
-			// Create a commit
-			opts := &github.RepositoryContentFileOptions{
-				Message: github.Ptr(fmt.Sprintf("Update GitHub Actions in %s to use pinned hashes", dep.Workflow)),
-				Content: []byte(updatedContent),
-				Branch:  github.Ptr(branchName),
-				SHA:     fileContent.SHA,
-			}
+			if dryRun {
+				// In dry run mode, show the diff
+				fmt.Printf("\nChanges for %s:%s\n", workflowPath, colorReset)
+				printDiff(content, updatedContent)
+				fmt.Println()
+			} else {
+				// Create a commit
+				opts := &github.RepositoryContentFileOptions{
+					Message: github.Ptr(fmt.Sprintf("Update GitHub Actions in %s to use pinned hashes", dep.Workflow)),
+					Content: []byte(updatedContent),
+					Branch:  github.Ptr(branchName),
+					SHA:     fileContent.SHA,
+				}
 
-			_, _, err = client.Repositories.UpdateFile(ctx, owner, repo, workflowPath, opts)
-			if err != nil {
-				logrus.WithFields(logrus.Fields{
-					"repo":     targetRepo,
-					"workflow": workflowPath,
-					"error":    err,
-				}).Error("Failed to update file")
-				continue
+				_, _, err = client.Repositories.UpdateFile(ctx, owner, repo, workflowPath, opts)
+				if err != nil {
+					logrus.WithFields(logrus.Fields{
+						"repo":     targetRepo,
+						"workflow": workflowPath,
+						"error":    err,
+					}).Error("Failed to update file")
+					continue
+				}
 			}
 
 			filesChanged[workflowPath] = true
@@ -348,23 +346,35 @@ func processRepoWithBranch(ctx context.Context, client *github.Client, owner, re
 
 	// If no files were changed, check if a PR already exists and show its link
 	if len(filesChanged) == 0 {
-		logrus.Info("No files were changed")
-
-		// Check if a PR already exists for this branch
-		existingPRs, _, err := client.PullRequests.List(ctx, owner, repo, &github.PullRequestListOptions{
-			Head:  fmt.Sprintf("%s:%s", owner, branchName),
-			State: "open",
-		})
-		if err != nil {
-			return fmt.Errorf("failed to check for existing PRs: %w", err)
-		}
-
-		if len(existingPRs) > 0 {
-			pr := existingPRs[0]
-			fmt.Printf("Found existing PR #%d: %s\n", pr.GetNumber(), pr.GetHTMLURL())
+		if dryRun {
+			fmt.Printf("%sNo changes would be made%s\n", colorBlue, colorReset)
 		} else {
-			fmt.Println("No existing PR found and no changes to make")
+			logrus.Info("No files were changed")
+
+			// Check if a PR already exists for this branch
+			existingPRs, _, err := client.PullRequests.List(ctx, owner, repo, &github.PullRequestListOptions{
+				Head:  fmt.Sprintf("%s:%s", owner, branchName),
+				State: "open",
+			})
+			if err != nil {
+				return fmt.Errorf("failed to check for existing PRs: %w", err)
+			}
+
+			if len(existingPRs) > 0 {
+				pr := existingPRs[0]
+				fmt.Printf("Found existing PR #%d: %s\n", pr.GetNumber(), pr.GetHTMLURL())
+			} else {
+				fmt.Println("No existing PR found and no changes to make")
+			}
 		}
+		return nil
+	}
+
+	if dryRun {
+		fmt.Printf("\n%sWould create PR from branch '%s' to '%s' in repo '%s/%s'%s\n",
+			colorBlue, branchName, defaultBranch, owner, repo, colorReset)
+		fmt.Printf("%sPR title would be: %s%s\n", colorBlue, prTitle, colorReset)
+		fmt.Printf("%sPR body would be: %s%s\n", colorBlue, prBody, colorReset)
 		return nil
 	}
 
@@ -405,4 +415,24 @@ func processRepoWithBranch(ctx context.Context, client *github.Client, owner, re
 
 	fmt.Printf("Created PR #%d: %s\n", pr.GetNumber(), pr.GetHTMLURL())
 	return nil
+}
+
+// printDiff prints a simple diff between two strings with color
+func printDiff(original, updated string) {
+	originalLines := strings.Split(original, "\n")
+	updatedLines := strings.Split(updated, "\n")
+
+	for i := 0; i < len(originalLines) || i < len(updatedLines); i++ {
+		if i >= len(originalLines) {
+			// New line added
+			fmt.Printf("%s+ %s%s\n", colorGreen, updatedLines[i], colorReset)
+		} else if i >= len(updatedLines) {
+			// Line removed
+			fmt.Printf("%s- %s%s\n", colorRed, originalLines[i], colorReset)
+		} else if originalLines[i] != updatedLines[i] {
+			// Line changed
+			fmt.Printf("%s- %s%s\n", colorRed, originalLines[i], colorReset)
+			fmt.Printf("%s+ %s%s\n", colorGreen, updatedLines[i], colorReset)
+		}
+	}
 }
