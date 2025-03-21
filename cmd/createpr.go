@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/google/go-github/v60/github"
+	"github.com/google/go-github/v70/github"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"golang.org/x/oauth2"
@@ -202,6 +202,62 @@ func processRepoWithBranch(ctx context.Context, client *github.Client, owner, re
 		// Update the content with recommended hashes
 		updatedContent := content
 		changed := false
+
+		// Use regex to handle potential whitespace variations
+
+		type SpecialCase struct {
+			Pattern     string
+			Replacement string
+		}
+
+		specialCases := []SpecialCase{
+			{
+				Pattern:     `(\s*)uses: nobrayner/discord-webhook@2f38abc8877c7e8d2b0ded0cfd9599632014279f # 2f38abc`,
+				Replacement: "${1}uses: nobrayner/discord-webhook@1766a33bf571acdcc0678f00da4fb83aad01ebc7 # v1",
+			},
+			{
+				Pattern:     `(\s*)uses: azure/setup-helm@37dd2562cae2f186a3dc13f2bb5d4abe08dbfec4 # 37dd256`,
+				Replacement: "${1}uses: azure/setup-helm@b9e51907a09c216f16ebe8536097933489208112 # v4.3.0",
+			},
+			{
+				Pattern:     `(\s*)uses: crate-ci/typos@0fa392de4a080a8f22469c05415090ee3addf4fb # 0fa392d`,
+				Replacement: "${1}uses: crate-ci/typos@7bc041cbb7ca9167c9e0e4ccbb26f48eb0f9d4e0 # v1.30.2",
+			},
+			{
+				Pattern:     `(\s*)uses: crate-ci/typos@d2c5225afeda85a5abf7a567cdd01c3e329c8ccb # d2c5225`,
+				Replacement: "${1}uses: crate-ci/typos@7bc041cbb7ca9167c9e0e4ccbb26f48eb0f9d4e0 # v1.30.2",
+			},
+			{
+				Pattern:     `(\s*)uses: asdf-vm/actions/setup@833d04dfd3c702c45fa5cbccffdf17a526d40ed2 # 833d04d`,
+				Replacement: "${1}uses: asdf-vm/actions/setup@05e0d2ed97b598bfce82fd30daf324ae0c4570e6 # v3.0.2",
+			},
+			{
+				Pattern:     `(\s*)uses: asdf-vm/actions/setup@7dd2d2ea8a8f52028ca0fdfba65767b8f2db8298 # 7dd2d2e`,
+				Replacement: "${1}uses: asdf-vm/actions/setup@05e0d2ed97b598bfce82fd30daf324ae0c4570e6 # v3.0.2",
+			},
+			{
+				Pattern:     `(\s*)uses: jwalton/gh-docker-logs@eb53a99ccbbb34d4243439c2c3dac3ed78a926ed # eb53a99`,
+				Replacement: "${1}uses: jwalton/gh-docker-logs@2741064ab9d7af54b0b1ffb6076cf64c16f0220e # v2.2.2",
+			},
+			{
+				Pattern:     `(\s*)uses: nrkno/yaml-schema-validator-github-action@4280780c703671c96fcdf493b2e64b16e25c4941 # 4280780`,
+				Replacement: "${1}uses: nrkno/yaml-schema-validator-github-action@54e1fe495e281c451e1ece58808b6fd7710c30ed # v5.1.0",
+			},
+		}
+
+		for _, specialCase := range specialCases {
+			re := regexp.MustCompile(specialCase.Pattern)
+			if re.MatchString(updatedContent) {
+				updatedContent = re.ReplaceAllString(updatedContent, specialCase.Replacement)
+				changed = true
+				logrus.WithFields(logrus.Fields{
+					"action":   "azure/setup-helm",
+					"from":     "37dd2562cae2f186a3dc13f2bb5d4abe08dbfec4",
+					"to":       "b9e51907a09c216f16ebe8536097933489208112",
+					"workflow": workflowPath,
+				}).Info("Updating azure/setup-helm action")
+			}
+		}
 
 		for _, action := range dep.Actions {
 			if action.Type == "external" && action.IsHashedVersion {

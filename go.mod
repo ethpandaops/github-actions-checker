@@ -3,7 +3,7 @@ module github.com/ethpandaops/github-actions-deps-checker
 go 1.23.5
 
 require (
-	github.com/google/go-github/v60 v60.0.0
+	github.com/google/go-github/v70 v70.0.0
 	github.com/sirupsen/logrus v1.9.3
 	github.com/spf13/cobra v1.9.1
 	golang.org/x/oauth2 v0.28.0
