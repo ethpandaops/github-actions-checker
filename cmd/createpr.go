@@ -22,6 +22,7 @@ var (
 	prTitle       string
 	prBody        string
 	allRepos      bool
+	skipPR        bool
 	createPRCmd   = &cobra.Command{
 		Use:   "create-pr",
 		Short: "Create a PR to update GitHub Actions to use recommended hashes",
@@ -36,6 +37,7 @@ func init() {
 	createPRCmd.Flags().StringVarP(&prTitle, "title", "t", "Update GitHub Actions to use pinned hashes", "PR title")
 	createPRCmd.Flags().StringVarP(&prBody, "body", "", "This PR updates GitHub Actions to use pinned commit hashes for better security.", "PR body")
 	createPRCmd.Flags().BoolVarP(&allRepos, "all", "a", false, "Process all repositories in the input file")
+	createPRCmd.Flags().BoolVarP(&skipPR, "skip-pr", "s", false, "Skip PR creation, only create branch with changes")
 	createPRCmd.MarkFlagRequired("input")
 	// Don't mark repo as required - we'll check it in the command
 	rootCmd.AddCommand(createPRCmd)
@@ -153,7 +155,7 @@ func processRepoWithBranch(ctx context.Context, client *github.Client, owner, re
 
 	// Create a new branch
 	newRef := &github.Reference{
-		Ref:    github.String("refs/heads/" + branchName),
+		Ref:    github.Ptr("refs/heads/" + branchName),
 		Object: &github.GitObject{SHA: ref.Object.SHA},
 	}
 
@@ -324,9 +326,9 @@ func processRepoWithBranch(ctx context.Context, client *github.Client, owner, re
 		if changed {
 			// Create a commit
 			opts := &github.RepositoryContentFileOptions{
-				Message: github.String(fmt.Sprintf("Update GitHub Actions in %s to use pinned hashes", dep.Workflow)),
+				Message: github.Ptr(fmt.Sprintf("Update GitHub Actions in %s to use pinned hashes", dep.Workflow)),
 				Content: []byte(updatedContent),
-				Branch:  github.String(branchName),
+				Branch:  github.Ptr(branchName),
 				SHA:     fileContent.SHA,
 			}
 
@@ -366,6 +368,12 @@ func processRepoWithBranch(ctx context.Context, client *github.Client, owner, re
 		return nil
 	}
 
+	// If skipPR flag is set, don't create a PR
+	if skipPR {
+		fmt.Printf("Changes made to branch '%s' in repo '%s/%s'. PR creation skipped as requested.\n", branchName, owner, repo)
+		return nil
+	}
+
 	// Check if a PR already exists for this branch
 	existingPRs, _, err := client.PullRequests.List(ctx, owner, repo, &github.PullRequestListOptions{
 		Head:  fmt.Sprintf("%s:%s", owner, branchName),
@@ -383,11 +391,11 @@ func processRepoWithBranch(ctx context.Context, client *github.Client, owner, re
 
 	// Create a PR
 	newPR := &github.NewPullRequest{
-		Title:               github.String(prTitle),
-		Head:                github.String(branchName),
-		Base:                github.String(defaultBranch),
-		Body:                github.String(prBody),
-		MaintainerCanModify: github.Bool(true),
+		Title:               github.Ptr(prTitle),
+		Head:                github.Ptr(branchName),
+		Base:                github.Ptr(defaultBranch),
+		Body:                github.Ptr(prBody),
+		MaintainerCanModify: github.Ptr(true),
 	}
 
 	pr, _, err := client.PullRequests.Create(ctx, owner, repo, newPR)
