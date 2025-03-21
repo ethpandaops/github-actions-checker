@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/google/go-github/v70/github"
 	"github.com/sirupsen/logrus"
@@ -24,6 +25,7 @@ var (
 	allRepos      bool
 	skipPR        bool
 	dryRun        bool
+	useFork       bool
 	createPRCmd   = &cobra.Command{
 		Use:   "create-pr",
 		Short: "Create a PR to update GitHub Actions to use recommended hashes",
@@ -49,6 +51,7 @@ func init() {
 	createPRCmd.Flags().BoolVarP(&allRepos, "all", "a", false, "Process all repositories in the input file")
 	createPRCmd.Flags().BoolVarP(&skipPR, "skip-pr", "s", false, "Skip PR creation, only create branch with changes")
 	createPRCmd.Flags().BoolVarP(&dryRun, "dry-run", "d", false, "Show what would be changed without creating branch or PR")
+	createPRCmd.Flags().BoolVarP(&useFork, "fork", "f", false, "Create PR from a personal fork")
 	createPRCmd.MarkFlagRequired("input")
 	// Don't mark repo as required - we'll check it in the command
 	rootCmd.AddCommand(createPRCmd)
@@ -153,6 +156,38 @@ func processRepo(token string, deps []ActionDependency) error {
 	}
 
 	defaultBranch := repository.GetDefaultBranch()
+
+	// Handle forking if requested
+	if useFork && !dryRun {
+		headOwner, err := getAuthenticatedUser(ctx, client)
+		if err != nil {
+			return fmt.Errorf("failed to get authenticated user: %w", err)
+		}
+
+		// Check if fork exists
+		_, resp, err := client.Repositories.Get(ctx, headOwner, repo)
+		if err != nil && resp.StatusCode == 404 {
+			// Fork doesn't exist, create it
+			logrus.Infof("Creating fork of %s/%s", owner, repo)
+			_, _, err = client.Repositories.CreateFork(ctx, owner, repo, &github.RepositoryCreateForkOptions{})
+			if err != nil {
+				return fmt.Errorf("failed to create fork: %w", err)
+			}
+
+			// Wait for fork to be created
+			logrus.Info("Waiting for fork to be ready...")
+			err = waitForFork(ctx, client, headOwner, repo)
+			if err != nil {
+				return fmt.Errorf("fork creation timed out: %w", err)
+			}
+		} else if err != nil {
+			return fmt.Errorf("failed to check for existing fork: %w", err)
+		}
+
+		// Use the fork for the PR
+		return processRepoWithFork(ctx, client, owner, repo, headOwner, defaultBranch, branchName, targetDeps)
+	}
+
 	return processRepoWithBranch(ctx, client, owner, repo, defaultBranch, branchName, targetDeps)
 }
 
@@ -185,6 +220,61 @@ func processRepoWithBranch(ctx context.Context, client *github.Client, owner, re
 		}
 	}
 
+	// Process workflow files and create PR
+	return processWorkflowsAndCreatePR(ctx, client, owner, repo, owner, defaultBranch, branchName, targetDeps)
+}
+
+// Add new function to handle forked workflow
+func processRepoWithFork(ctx context.Context, client *github.Client, upstreamOwner, repo, forkOwner, defaultBranch, branchName string, targetDeps []ActionDependency) error {
+	// First, sync fork with upstream to ensure we have the latest code
+	if !dryRun {
+		logrus.Infof("Syncing fork %s/%s with upstream %s/%s", forkOwner, repo, upstreamOwner, repo)
+
+		// Get the reference to the default branch in the upstream repo
+		upstreamRef, _, err := client.Git.GetRef(ctx, upstreamOwner, repo, "refs/heads/"+defaultBranch)
+		if err != nil {
+			return fmt.Errorf("failed to get upstream reference: %w", err)
+		}
+
+		// Update the default branch in the fork to match upstream
+		forkRef, _, err := client.Git.GetRef(ctx, forkOwner, repo, "refs/heads/"+defaultBranch)
+		if err != nil {
+			return fmt.Errorf("failed to get fork reference: %w", err)
+		}
+
+		// Update fork's default branch to match upstream
+		forkRef.Object.SHA = upstreamRef.Object.SHA
+		_, _, err = client.Git.UpdateRef(ctx, forkOwner, repo, forkRef, false)
+		if err != nil {
+			return fmt.Errorf("failed to sync fork with upstream: %w", err)
+		}
+
+		// Create a new branch in the fork
+		newRef := &github.Reference{
+			Ref:    github.Ptr("refs/heads/" + branchName),
+			Object: &github.GitObject{SHA: upstreamRef.Object.SHA},
+		}
+
+		_, _, err = client.Git.CreateRef(ctx, forkOwner, repo, newRef)
+		if err != nil {
+			// If branch already exists, try to get it
+			if strings.Contains(err.Error(), "Reference already exists") {
+				_, _, err = client.Git.GetRef(ctx, forkOwner, repo, "refs/heads/"+branchName)
+				if err != nil {
+					return fmt.Errorf("branch already exists but couldn't be retrieved: %w", err)
+				}
+			} else {
+				return fmt.Errorf("failed to create branch in fork: %w", err)
+			}
+		}
+	}
+
+	// Process workflow files and create PR
+	return processWorkflowsAndCreatePR(ctx, client, upstreamOwner, repo, forkOwner, defaultBranch, branchName, targetDeps)
+}
+
+// New function to process workflow files and create PR
+func processWorkflowsAndCreatePR(ctx context.Context, client *github.Client, upstreamOwner, repo, headOwner, defaultBranch, branchName string, targetDeps []ActionDependency) error {
 	// Process each workflow file
 	filesChanged := make(map[string]bool)
 	for _, dep := range targetDeps {
@@ -195,14 +285,14 @@ func processRepoWithBranch(ctx context.Context, client *github.Client, owner, re
 		var fileContent *github.RepositoryContent
 
 		if dryRun {
-			// In dry run mode, always get from default branch
+			// In dry run mode, always get from upstream default branch
 			fc, _, _, err := client.Repositories.GetContents(
-				ctx, owner, repo, workflowPath,
+				ctx, upstreamOwner, repo, workflowPath,
 				&github.RepositoryContentGetOptions{Ref: defaultBranch},
 			)
 			if err != nil {
 				logrus.WithFields(logrus.Fields{
-					"repo":     targetRepo,
+					"repo":     fmt.Sprintf("%s/%s", upstreamOwner, repo),
 					"workflow": workflowPath,
 					"error":    err,
 				}).Error("Failed to get workflow file")
@@ -212,12 +302,12 @@ func processRepoWithBranch(ctx context.Context, client *github.Client, owner, re
 		} else {
 			// Normal mode, get from the branch we created
 			fc, _, _, err := client.Repositories.GetContents(
-				ctx, owner, repo, workflowPath,
+				ctx, headOwner, repo, workflowPath,
 				&github.RepositoryContentGetOptions{Ref: branchName},
 			)
 			if err != nil {
 				logrus.WithFields(logrus.Fields{
-					"repo":     targetRepo,
+					"repo":     fmt.Sprintf("%s/%s", headOwner, repo),
 					"workflow": workflowPath,
 					"error":    err,
 				}).Error("Failed to get workflow file")
@@ -230,7 +320,7 @@ func processRepoWithBranch(ctx context.Context, client *github.Client, owner, re
 		content, err = fileContent.GetContent()
 		if err != nil {
 			logrus.WithFields(logrus.Fields{
-				"repo":     targetRepo,
+				"repo":     fmt.Sprintf("%s/%s", headOwner, repo),
 				"workflow": workflowPath,
 				"error":    err,
 			}).Error("Failed to decode content")
@@ -329,10 +419,10 @@ func processRepoWithBranch(ctx context.Context, client *github.Client, owner, re
 					SHA:     fileContent.SHA,
 				}
 
-				_, _, err = client.Repositories.UpdateFile(ctx, owner, repo, workflowPath, opts)
+				_, _, err = client.Repositories.UpdateFile(ctx, headOwner, repo, workflowPath, opts)
 				if err != nil {
 					logrus.WithFields(logrus.Fields{
-						"repo":     targetRepo,
+						"repo":     fmt.Sprintf("%s/%s", headOwner, repo),
 						"workflow": workflowPath,
 						"error":    err,
 					}).Error("Failed to update file")
@@ -352,8 +442,8 @@ func processRepoWithBranch(ctx context.Context, client *github.Client, owner, re
 			logrus.Info("No files were changed")
 
 			// Check if a PR already exists for this branch
-			existingPRs, _, err := client.PullRequests.List(ctx, owner, repo, &github.PullRequestListOptions{
-				Head:  fmt.Sprintf("%s:%s", owner, branchName),
+			existingPRs, _, err := client.PullRequests.List(ctx, upstreamOwner, repo, &github.PullRequestListOptions{
+				Head:  fmt.Sprintf("%s:%s", headOwner, branchName),
 				State: "open",
 			})
 			if err != nil {
@@ -371,8 +461,8 @@ func processRepoWithBranch(ctx context.Context, client *github.Client, owner, re
 	}
 
 	if dryRun {
-		fmt.Printf("\n%sWould create PR from branch '%s' to '%s' in repo '%s/%s'%s\n",
-			colorBlue, branchName, defaultBranch, owner, repo, colorReset)
+		fmt.Printf("\n%sWould create PR from %s/%s branch '%s' to '%s/%s' branch '%s'%s\n",
+			colorBlue, headOwner, repo, branchName, upstreamOwner, repo, defaultBranch, colorReset)
 		fmt.Printf("%sPR title would be: %s%s\n", colorBlue, prTitle, colorReset)
 		fmt.Printf("%sPR body would be: %s%s\n", colorBlue, prBody, colorReset)
 		return nil
@@ -380,13 +470,14 @@ func processRepoWithBranch(ctx context.Context, client *github.Client, owner, re
 
 	// If skipPR flag is set, don't create a PR
 	if skipPR {
-		fmt.Printf("Changes made to branch '%s' in repo '%s/%s'. PR creation skipped as requested.\n", branchName, owner, repo)
+		fmt.Printf("Changes made to branch '%s' in %s/%s. PR creation skipped as requested.\n",
+			branchName, headOwner, repo)
 		return nil
 	}
 
 	// Check if a PR already exists for this branch
-	existingPRs, _, err := client.PullRequests.List(ctx, owner, repo, &github.PullRequestListOptions{
-		Head:  fmt.Sprintf("%s:%s", owner, branchName),
+	existingPRs, _, err := client.PullRequests.List(ctx, upstreamOwner, repo, &github.PullRequestListOptions{
+		Head:  fmt.Sprintf("%s:%s", headOwner, branchName),
 		State: "open",
 	})
 	if err != nil {
@@ -402,13 +493,13 @@ func processRepoWithBranch(ctx context.Context, client *github.Client, owner, re
 	// Create a PR
 	newPR := &github.NewPullRequest{
 		Title:               github.Ptr(prTitle),
-		Head:                github.Ptr(branchName),
+		Head:                github.Ptr(fmt.Sprintf("%s:%s", headOwner, branchName)),
 		Base:                github.Ptr(defaultBranch),
 		Body:                github.Ptr(prBody),
 		MaintainerCanModify: github.Ptr(true),
 	}
 
-	pr, _, err := client.PullRequests.Create(ctx, owner, repo, newPR)
+	pr, _, err := client.PullRequests.Create(ctx, upstreamOwner, repo, newPR)
 	if err != nil {
 		return fmt.Errorf("failed to create PR: %w", err)
 	}
@@ -435,4 +526,29 @@ func printDiff(original, updated string) {
 			fmt.Printf("%s+ %s%s\n", colorGreen, updatedLines[i], colorReset)
 		}
 	}
+}
+
+// Add new function to get authenticated user
+func getAuthenticatedUser(ctx context.Context, client *github.Client) (string, error) {
+	user, _, err := client.Users.Get(ctx, "")
+	if err != nil {
+		return "", err
+	}
+	return user.GetLogin(), nil
+}
+
+// Add new function to wait for fork to be ready
+func waitForFork(ctx context.Context, client *github.Client, owner, repo string) error {
+	// Try up to 10 times with a 2-second delay
+	for i := 0; i < 10; i++ {
+		_, resp, err := client.Repositories.Get(ctx, owner, repo)
+		if err == nil {
+			return nil // Fork is ready
+		}
+		if resp.StatusCode != 404 {
+			return err // Unexpected error
+		}
+		time.Sleep(2 * time.Second)
+	}
+	return fmt.Errorf("fork not ready after waiting")
 }
