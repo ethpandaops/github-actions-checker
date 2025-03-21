@@ -24,6 +24,7 @@ var (
 	IncludeArchived bool
 	IncludeForked   bool
 	LogLevel        string
+	BranchName      string
 	rootCmd         = &cobra.Command{
 		Use:   "action-deps",
 		Short: "Analyze GitHub Action dependencies in an organization or repository",
@@ -46,6 +47,7 @@ func init() {
 	rootCmd.Flags().BoolVarP(&IncludeArchived, "include-archived", "a", false, "Include archived repositories in scan")
 	rootCmd.Flags().BoolVarP(&IncludeForked, "include-forked", "", false, "Include forked repositories in scan")
 	rootCmd.Flags().StringVarP(&LogLevel, "log-level", "l", "info", "Set log level (debug, info, warn, error, fatal, panic)")
+	rootCmd.Flags().StringVarP(&BranchName, "branch", "b", "", "Specific branch to scan (overrides default branch)")
 }
 
 type ActionDependency struct {
@@ -155,8 +157,16 @@ func run(cmd *cobra.Command, args []string) error {
 		outputFile = OutputFile
 	} else if RepoName != "" {
 		outputFile = strings.ReplaceAll(RepoName, "/", "-")
+		// Append branch name if specified
+		if BranchName != "" {
+			outputFile = fmt.Sprintf("%s-%s", outputFile, BranchName)
+		}
 	} else if OrgName != "" {
 		outputFile = OrgName
+		// Append branch name if specified
+		if BranchName != "" {
+			outputFile = fmt.Sprintf("%s-%s", outputFile, BranchName)
+		}
 	}
 
 	jsonOutputFile := fmt.Sprintf("%s.json", outputFile)
@@ -193,22 +203,28 @@ func getWorkflowDependencies(ctx context.Context, client *github.Client, owner, 
 	// Track processed local actions to avoid infinite recursion
 	processedLocalActions := make(map[string]bool)
 
-	repository, resp, err := client.Repositories.Get(ctx, owner, repo)
-	if err != nil {
-		logrus.WithFields(logrus.Fields{
-			"repo":  fmt.Sprintf("%s/%s", owner, repo),
-			"error": err,
-			"resp":  resp.Status,
-		}).Error("Failed to get repository default branch")
-		// Continue with default branch instead of returning
+	// Use specified branch if provided, otherwise get default branch
+	branchToUse := BranchName
+	if branchToUse == "" {
+		repository, resp, err := client.Repositories.Get(ctx, owner, repo)
+		if err != nil {
+			logrus.WithFields(logrus.Fields{
+				"repo":  fmt.Sprintf("%s/%s", owner, repo),
+				"error": err,
+				"resp":  resp.Status,
+			}).Error("Failed to get repository default branch. Using 'main' as fallback.")
+			// Continue with "main" as fallback
+			branchToUse = "main"
+		} else {
+			branchToUse = *repository.DefaultBranch
+		}
 	}
-	defaultBranch := *repository.DefaultBranch
 
 	// Helper function to check if a file exists and process it
 	var checkAndProcessWorkflow func(path string) ([]ActionDetails, []ActionDependency)
 	checkAndProcessWorkflow = func(path string) ([]ActionDetails, []ActionDependency) {
 		content, _, resp, err := client.Repositories.GetContents(ctx, owner, repo, path, &github.RepositoryContentGetOptions{
-			Ref: defaultBranch,
+			Ref: branchToUse,
 		})
 
 		if err != nil {
@@ -275,7 +291,7 @@ func getWorkflowDependencies(ctx context.Context, client *github.Client, owner, 
 							Repo:     fmt.Sprintf("%s/%s", owner, repo),
 							Actions:  localActions,
 							Workflow: actionYamlPath,
-							Branch:   defaultBranch,
+							Branch:   branchToUse,
 						})
 						localDeps = append(localDeps, subDeps...)
 					}
@@ -289,11 +305,12 @@ func getWorkflowDependencies(ctx context.Context, client *github.Client, owner, 
 	}
 
 	// Get all workflow files using the Git Trees API
-	tree, _, err := client.Git.GetTree(ctx, owner, repo, defaultBranch, true)
+	tree, _, err := client.Git.GetTree(ctx, owner, repo, branchToUse, true)
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
-			"repo":  fmt.Sprintf("%s/%s", owner, repo),
-			"error": err,
+			"repo":   fmt.Sprintf("%s/%s", owner, repo),
+			"branch": branchToUse,
+			"error":  err,
 		}).Error("Failed to get git tree")
 		return deps
 	}
@@ -317,7 +334,7 @@ func getWorkflowDependencies(ctx context.Context, client *github.Client, owner, 
 					Repo:     fmt.Sprintf("%s/%s", owner, repo),
 					Actions:  actions,
 					Workflow: entry.GetPath(),
-					Branch:   defaultBranch,
+					Branch:   branchToUse,
 				})
 				deps = append(deps, localDeps...)
 			}
@@ -341,7 +358,7 @@ func getWorkflowDependencies(ctx context.Context, client *github.Client, owner, 
 					Repo:     fmt.Sprintf("%s/%s", owner, repo),
 					Actions:  actions,
 					Workflow: entry.GetPath(),
-					Branch:   defaultBranch,
+					Branch:   branchToUse,
 				})
 				deps = append(deps, localDeps...)
 			}
@@ -371,11 +388,16 @@ func getWorkflowDependencies(ctx context.Context, client *github.Client, owner, 
 					Repo:     fmt.Sprintf("%s/%s", owner, repo),
 					Actions:  actions,
 					Workflow: entry.GetPath(),
-					Branch:   defaultBranch,
+					Branch:   branchToUse,
 				})
 				deps = append(deps, localDeps...)
 			}
 		}
+	}
+
+	// Update all ActionDependency instances to include the branch
+	for i := range deps {
+		deps[i].Branch = branchToUse
 	}
 
 	return deps
