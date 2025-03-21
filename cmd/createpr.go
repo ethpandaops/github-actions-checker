@@ -354,19 +354,27 @@ func processWorkflowsAndCreatePR(ctx context.Context, client *github.Client, ups
 
 				// Replace the line completely, including any existing comment
 				if re.MatchString(updatedContent) {
-					updatedContent = re.ReplaceAllString(updatedContent, replacement)
-					changed = true
+					newContent := re.ReplaceAllString(updatedContent, replacement)
+					if newContent != updatedContent {
+						updatedContent = newContent
+						changed = true
 
-					if dryRun {
-						fmt.Printf("%sWould update comment for %s@%s to include version %s in %s%s\n",
-							colorYellow, action.Name, action.Version, action.VersionHashReverseLookupVersion,
-							workflowPath, colorReset)
+						if dryRun {
+							fmt.Printf("%sWould update comment for %s@%s to include version %s in %s%s\n",
+								colorYellow, action.Name, action.Version, action.VersionHashReverseLookupVersion,
+								workflowPath, colorReset)
+						} else {
+							logrus.WithFields(logrus.Fields{
+								"action":   action.Name,
+								"version":  action.Version,
+								"workflow": workflowPath,
+							}).Info("Updating version comment for hashed action")
+						}
 					} else {
-						logrus.WithFields(logrus.Fields{
-							"action":   action.Name,
-							"version":  action.Version,
-							"workflow": workflowPath,
-						}).Info("Updating version comment for hashed action")
+						if dryRun {
+							fmt.Printf("%sNo change needed for %s@%s (already has correct comment) in %s%s\n",
+								colorBlue, action.Name, action.Version, workflowPath, colorReset)
+						}
 					}
 				}
 			} else if action.Type == "external" && !action.IsHashedVersion && action.RecommendedHash != "" {
@@ -384,20 +392,28 @@ func processWorkflowsAndCreatePR(ctx context.Context, client *github.Client, ups
 				}
 
 				if re.MatchString(updatedContent) {
-					updatedContent = re.ReplaceAllString(updatedContent, replacement)
-					changed = true
+					newContent := re.ReplaceAllString(updatedContent, replacement)
+					if newContent != updatedContent {
+						updatedContent = newContent
+						changed = true
 
-					if dryRun {
-						fmt.Printf("%sWould update %s from %s to %s (%s) in %s%s\n",
-							colorYellow, action.Name, action.Version, action.RecommendedHash,
-							action.RecommendedHashReverseLookupVersion, workflowPath, colorReset)
+						if dryRun {
+							fmt.Printf("%sWould update %s from %s to %s (%s) in %s%s\n",
+								colorYellow, action.Name, action.Version, action.RecommendedHash,
+								action.RecommendedHashReverseLookupVersion, workflowPath, colorReset)
+						} else {
+							logrus.WithFields(logrus.Fields{
+								"action":   action.Name,
+								"from":     action.Version,
+								"to":       action.RecommendedHash,
+								"workflow": workflowPath,
+							}).Info("Updating action")
+						}
 					} else {
-						logrus.WithFields(logrus.Fields{
-							"action":   action.Name,
-							"from":     action.Version,
-							"to":       action.RecommendedHash,
-							"workflow": workflowPath,
-						}).Info("Updating action")
+						if dryRun {
+							fmt.Printf("%sNo change needed for %s@%s (already has correct hash) in %s%s\n",
+								colorBlue, action.Name, action.Version, workflowPath, colorReset)
+						}
 					}
 				}
 			}
@@ -407,7 +423,7 @@ func processWorkflowsAndCreatePR(ctx context.Context, client *github.Client, ups
 		if changed {
 			if dryRun {
 				// In dry run mode, show the diff
-				fmt.Printf("\nChanges for %s:%s\n", workflowPath, colorReset)
+				fmt.Printf("\n%sChanges for %s:%s\n", colorBlue, workflowPath, colorReset)
 				printDiff(content, updatedContent)
 				fmt.Println()
 			} else {
@@ -431,6 +447,8 @@ func processWorkflowsAndCreatePR(ctx context.Context, client *github.Client, ups
 			}
 
 			filesChanged[workflowPath] = true
+		} else if dryRun {
+			fmt.Printf("\n%sNo actual changes needed for %s%s\n", colorBlue, workflowPath, colorReset)
 		}
 	}
 
@@ -524,6 +542,9 @@ func printDiff(original, updated string) {
 			// Line changed
 			fmt.Printf("%s- %s%s\n", colorRed, originalLines[i], colorReset)
 			fmt.Printf("%s+ %s%s\n", colorGreen, updatedLines[i], colorReset)
+		} else if strings.Contains(originalLines[i], "uses:") && strings.Contains(originalLines[i], "@") {
+			// Show unchanged action lines for context
+			fmt.Printf("  %s\n", originalLines[i])
 		}
 	}
 }
