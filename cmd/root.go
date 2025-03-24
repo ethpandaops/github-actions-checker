@@ -519,6 +519,9 @@ func extractActions(content string) []ActionDetails {
 				version = action[idx+1:]
 			}
 
+			// Strip quotes from name if present
+			name = strings.Trim(name, `"'`)
+
 			// Only consider actions starting with ./ as internal
 			actionType := "external"
 			if strings.HasPrefix(name, "./") {
