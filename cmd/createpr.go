@@ -74,10 +74,12 @@ func createPR(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to read input file: %w", err)
 	}
 
-	var deps []ActionDependency
-	if err := json.Unmarshal(data, &deps); err != nil {
+	var outputData OutputData
+	if err := json.Unmarshal(data, &outputData); err != nil {
 		return fmt.Errorf("failed to parse JSON: %w", err)
 	}
+
+	deps := outputData.Workflows
 
 	// If --all flag is set, process all repos
 	if allRepos {
