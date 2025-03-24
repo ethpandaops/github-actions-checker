@@ -57,8 +57,8 @@ func generateHTMLFromJson(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to read input file: %w", err)
 	}
 
-	var deps []ActionDependency
-	if err := json.Unmarshal(data, &deps); err != nil {
+	var outputData OutputData
+	if err := json.Unmarshal(data, &outputData); err != nil {
 		return fmt.Errorf("failed to parse JSON: %w", err)
 	}
 
@@ -71,7 +71,7 @@ func generateHTMLFromJson(cmd *cobra.Command, args []string) error {
 	outputFile := strings.TrimSuffix(filepath.Base(inputFile), ".json") + ".html"
 	outputPath := filepath.Join(OutputDir, outputFile)
 
-	if err := generateHTMLReport(inputFile, outputPath, deps, generatedTime); err != nil {
+	if err := generateHTMLReport(inputFile, outputPath, outputData, generatedTime); err != nil {
 		return err
 	}
 
@@ -80,14 +80,34 @@ func generateHTMLFromJson(cmd *cobra.Command, args []string) error {
 }
 
 // Create a shared function for HTML report generation
-func generateHTMLReport(jsonFilePath, outputPath string, deps []ActionDependency, generatedTime string) error {
+func generateHTMLReport(jsonFilePath, outputPath string, data OutputData, generatedTime string) error {
+	// Calculate workflow and action counts for each repository
+	repoWorkflowsMap := make(map[string]map[string]bool) // repo -> workflow -> exists
+	repoActionCountMap := make(map[string]int)           // repo -> action count
+
+	for _, dep := range data.Workflows {
+		if _, exists := repoWorkflowsMap[dep.Repo]; !exists {
+			repoWorkflowsMap[dep.Repo] = make(map[string]bool)
+		}
+		repoWorkflowsMap[dep.Repo][dep.Workflow] = true
+		repoActionCountMap[dep.Repo] += len(dep.Actions)
+	}
+
+	// Update dependabotInfo with workflow and action counts
+	for i, info := range data.DependaBot {
+		if workflows, exists := repoWorkflowsMap[info.Repo]; exists {
+			data.DependaBot[i].WorkflowCount = len(workflows)
+			data.DependaBot[i].ActionCount = repoActionCountMap[info.Repo]
+		}
+	}
+
 	// Calculate statistics
 	var externalWithHash, externalWithoutHash int
 
 	// Track external actions usage
 	actionUsage := make(map[string]map[string]int) // action name -> version -> count
 
-	for _, dep := range deps {
+	for _, dep := range data.Workflows {
 		for _, action := range dep.Actions {
 			if action.Type == "external" {
 				if action.IsHashedVersion {
@@ -125,7 +145,7 @@ func generateHTMLReport(jsonFilePath, outputPath string, deps []ActionDependency
 
 		// Find human-readable versions for each hash
 		versionToHumanReadable := make(map[string]string)
-		for _, dep := range deps {
+		for _, dep := range data.Workflows {
 			for _, action := range dep.Actions {
 				if action.Name == name && action.VersionHashReverseLookupVersion != "" {
 					versionToHumanReadable[action.Version] = action.VersionHashReverseLookupVersion
@@ -161,7 +181,7 @@ func generateHTMLReport(jsonFilePath, outputPath string, deps []ActionDependency
 
 	// Organize data by repository
 	repoMap := make(map[string]*RepoSummary)
-	for _, dep := range deps {
+	for _, dep := range data.Workflows {
 		if _, exists := repoMap[dep.Repo]; !exists {
 			repoMap[dep.Repo] = &RepoSummary{
 				Name:      dep.Repo,
@@ -258,6 +278,7 @@ func generateHTMLReport(jsonFilePath, outputPath string, deps []ActionDependency
 		ReposWithoutWarnings int
 		TotalRepos           int
 		GeneratedTime        string
+		DependabotInfo       []DependabotInfo
 	}{
 		Repos:                repos,
 		ActionSummaries:      actionSummaries,
@@ -269,6 +290,7 @@ func generateHTMLReport(jsonFilePath, outputPath string, deps []ActionDependency
 		ReposWithoutWarnings: reposWithoutWarnings,
 		TotalRepos:           len(repos),
 		GeneratedTime:        generatedTime,
+		DependabotInfo:       data.DependaBot,
 	}); err != nil {
 		return fmt.Errorf("failed to generate report: %w", err)
 	}
@@ -332,6 +354,56 @@ const reportTemplate = `
                     <div class="text-sm text-gray-600">GitHub Actions without pinned commit version</div>
                 </div>
             </div>
+
+            <!-- New Dependabot Summary Section -->
+            <div class="mt-6">
+                <h3 class="text-lg font-semibold mb-3">Dependabot Status</h3>
+                <div class="overflow-x-auto">
+                    <table class="min-w-full">
+                        <thead>
+                            <tr class="bg-gray-50">
+                                <th class="px-4 py-2 text-left text-sm font-medium text-gray-500">Repository</th>
+                                <th class="px-4 py-2 text-center text-sm font-medium text-gray-500">Dependabot File</th>
+                                <th class="px-4 py-2 text-center text-sm font-medium text-gray-500">GitHub Actions Updates</th>
+                                <th class="px-4 py-2 text-center text-sm font-medium text-gray-500">Workflows</th>
+                                <th class="px-4 py-2 text-center text-sm font-medium text-gray-500">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-gray-200">
+                            {{range .DependabotInfo}}
+                            <tr class="hover:bg-gray-50">
+                                <td class="px-4 py-2 text-sm">
+                                    <a href="https://github.com/{{.Repo}}" target="_blank" class="text-blue-600 hover:text-blue-800">
+                                        {{.Repo}}
+                                    </a>
+                                </td>
+                                <td class="px-4 py-2 text-sm text-center">
+                                    {{if .FileExists}}
+                                        <span class="text-green-500">✓</span>
+                                    {{else}}
+                                        <span class="text-red-500">✗</span>
+                                    {{end}}
+                                </td>
+                                <td class="px-4 py-2 text-sm text-center">
+                                    {{if .ActionsUpdate}}
+                                        <span class="text-green-500">✓</span>
+                                    {{else}}
+                                        <span class="text-red-500">✗</span>
+                                    {{end}}
+                                </td>
+                                <td class="px-4 py-2 text-sm text-center">
+                                    {{.WorkflowCount}}
+                                </td>
+                                <td class="px-4 py-2 text-sm text-center">
+                                    {{.ActionCount}}
+                                </td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
             <div class="mt-4 flex justify-end">
                 <button id="expandAllBtn" class="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
                     Expand All

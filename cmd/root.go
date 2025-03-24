@@ -57,6 +57,21 @@ type ActionDependency struct {
 	Branch   string          `json:"branch"`
 }
 
+// Add new struct for Dependabot info
+type DependabotInfo struct {
+	Repo          string `json:"repo"`
+	FileExists    bool   `json:"fileExists"`
+	ActionsUpdate bool   `json:"actionsUpdate"`
+	WorkflowCount int    `json:"workflowCount"`
+	ActionCount   int    `json:"actionCount"`
+}
+
+// Modify the output structure
+type OutputData struct {
+	Workflows  []ActionDependency `json:"workflows"`
+	DependaBot []DependabotInfo   `json:"dependaBot"`
+}
+
 type ActionDetails struct {
 	Name                                string `json:"name"`
 	Version                             string `json:"version"`
@@ -87,6 +102,7 @@ func run(cmd *cobra.Command, args []string) error {
 	client := github.NewClient(tc)
 
 	var allDeps []ActionDependency
+	var dependabotInfo []DependabotInfo
 
 	if RepoName != "" {
 		parts := strings.Split(RepoName, "/")
@@ -95,6 +111,10 @@ func run(cmd *cobra.Command, args []string) error {
 		}
 		deps := getWorkflowDependencies(ctx, client, parts[0], parts[1])
 		allDeps = append(allDeps, deps...)
+
+		// Check for dependabot file
+		dInfo := checkDependabotFile(ctx, client, parts[0], parts[1])
+		dependabotInfo = append(dependabotInfo, dInfo)
 	} else if OrgName != "" {
 		opt := &github.RepositoryListByOrgOptions{
 			Type: "public",
@@ -135,6 +155,10 @@ func run(cmd *cobra.Command, args []string) error {
 				}).Info("Processing repository")
 				deps := getWorkflowDependencies(ctx, client, OrgName, *repo.Name)
 				allDeps = append(allDeps, deps...)
+
+				// Check for dependabot file
+				dInfo := checkDependabotFile(ctx, client, OrgName, *repo.Name)
+				dependabotInfo = append(dependabotInfo, dInfo)
 			}
 
 			if resp.NextPage == 0 {
@@ -146,7 +170,13 @@ func run(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("either --org or --repo flag must be specified")
 	}
 
-	output, err := json.MarshalIndent(allDeps, "", "  ")
+	// Create the new output structure
+	outputData := OutputData{
+		Workflows:  allDeps,
+		DependaBot: dependabotInfo,
+	}
+
+	output, err := json.MarshalIndent(outputData, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal JSON: %w", err)
 	}
@@ -190,7 +220,7 @@ func run(cmd *cobra.Command, args []string) error {
 	// Format the current time as a string
 	generatedTime := time.Now().Format("Jan 02, 2006 15:04:05")
 
-	if err := generateHTMLReport(outputPath, htmlOutputPath, allDeps, generatedTime); err != nil {
+	if err := generateHTMLReport(outputPath, htmlOutputPath, outputData, generatedTime); err != nil {
 		return fmt.Errorf("failed to generate HTML report: %w", err)
 	}
 
@@ -621,4 +651,69 @@ func extractActions(content string) []ActionDetails {
 	}
 
 	return actions
+}
+
+func checkDependabotFile(ctx context.Context, client *github.Client, owner, repo string) DependabotInfo {
+	result := DependabotInfo{
+		Repo:          fmt.Sprintf("%s/%s", owner, repo),
+		FileExists:    false,
+		ActionsUpdate: false,
+		WorkflowCount: 0,
+		ActionCount:   0,
+	}
+
+	// Try to get the dependabot.yml file
+	content, _, resp, err := client.Repositories.GetContents(
+		ctx,
+		owner,
+		repo,
+		".github/dependabot.yml",
+		&github.RepositoryContentGetOptions{},
+	)
+
+	// Check if file wasn't found
+	if err != nil {
+		if resp != nil && resp.StatusCode == 404 {
+			// Try dependabot.yaml as an alternative
+			content, _, resp, err = client.Repositories.GetContents(
+				ctx,
+				owner,
+				repo,
+				".github/dependabot.yaml",
+				&github.RepositoryContentGetOptions{},
+			)
+
+			if err != nil {
+				// File doesn't exist or other error
+				return result
+			}
+		} else {
+			// Some other error occurred
+			logrus.WithFields(logrus.Fields{
+				"repo":  fmt.Sprintf("%s/%s", owner, repo),
+				"error": err,
+			}).Debug("Error checking for dependabot file")
+			return result
+		}
+	}
+
+	// File exists
+	result.FileExists = true
+
+	// Get the content
+	decodedContent, err := content.GetContent()
+	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"repo":  fmt.Sprintf("%s/%s", owner, repo),
+			"error": err,
+		}).Debug("Failed to decode dependabot.yml content")
+		return result
+	}
+
+	// Check if github-actions is enabled
+	if strings.Contains(decodedContent, "package-ecosystem: github-actions") {
+		result.ActionsUpdate = true
+	}
+
+	return result
 }
