@@ -27,16 +27,21 @@ func init() {
 	rootCmd.AddCommand(reportCmd)
 }
 
-type RepoSummary struct {
-	Name        string
-	Workflows   []WorkflowSummary
-	HasWarnings bool
-}
-
 type WorkflowSummary struct {
 	Name    string
 	Actions []ActionDetails
 	Branch  string
+}
+
+type RepoInfo struct {
+	Name                  string
+	Workflows             []WorkflowSummary
+	DependabotInfo        DependabotInfo
+	WorkflowCount         int
+	ActionCount           int
+	HashedActionsCount    int
+	HasWarnings           bool
+	HasDependabotWarnings bool
 }
 
 func generateHTMLFromJson(cmd *cobra.Command, args []string) error {
@@ -84,22 +89,118 @@ func generateHTMLReport(jsonFilePath, outputPath string, data OutputData, genera
 	// Calculate workflow and action counts for each repository
 	repoWorkflowsMap := make(map[string]map[string]bool) // repo -> workflow -> exists
 	repoActionCountMap := make(map[string]int)           // repo -> action count
+	repoHashedActionsMap := make(map[string]int)         // repo -> hashed action count
 
 	for _, dep := range data.Workflows {
 		if _, exists := repoWorkflowsMap[dep.Repo]; !exists {
 			repoWorkflowsMap[dep.Repo] = make(map[string]bool)
 		}
 		repoWorkflowsMap[dep.Repo][dep.Workflow] = true
-		repoActionCountMap[dep.Repo] += len(dep.Actions)
-	}
 
-	// Update dependabotInfo with workflow and action counts
-	for i, info := range data.DependaBot {
-		if workflows, exists := repoWorkflowsMap[info.Repo]; exists {
-			data.DependaBot[i].WorkflowCount = len(workflows)
-			data.DependaBot[i].ActionCount = repoActionCountMap[info.Repo]
+		// Count external actions for this repo
+		for _, action := range dep.Actions {
+			if action.Type == "external" {
+				repoActionCountMap[dep.Repo]++
+			}
+		}
+
+		// Count hashed actions for this repo
+		for _, action := range dep.Actions {
+			if action.Type == "external" && action.IsHashedVersion {
+				repoHashedActionsMap[dep.Repo]++
+			}
 		}
 	}
+
+	// Organize data by repository
+	repoMap := make(map[string]*RepoInfo)
+
+	// First create RepoInfo objects for each repo with their workflows
+	for _, dep := range data.Workflows {
+		if _, exists := repoMap[dep.Repo]; !exists {
+			repoMap[dep.Repo] = &RepoInfo{
+				Name:      dep.Repo,
+				Workflows: []WorkflowSummary{},
+			}
+		}
+
+		repoMap[dep.Repo].Workflows = append(repoMap[dep.Repo].Workflows, WorkflowSummary{
+			Name:    dep.Workflow,
+			Actions: dep.Actions,
+			Branch:  dep.Branch,
+		})
+	}
+
+	// Now fill in the Dependabot info and other stats
+	var reposWithWarnings, reposWithoutWarnings,
+		reposWithDependabotWarning, reposWithoutDependabotWarning int
+
+	for repoName, repo := range repoMap {
+		// Set workflow count
+		if workflows, exists := repoWorkflowsMap[repoName]; exists {
+			repo.WorkflowCount = len(workflows)
+		}
+
+		// Set action counts
+		repo.ActionCount = repoActionCountMap[repoName]
+		repo.HashedActionsCount = repoHashedActionsMap[repoName]
+
+		// Check if repo has any warnings (external deps without hash)
+		hasWarnings := false
+		for _, workflow := range repo.Workflows {
+			for _, action := range workflow.Actions {
+				if action.Type == "external" && !action.IsHashedVersion {
+					hasWarnings = true
+					break
+				}
+			}
+			if hasWarnings {
+				break
+			}
+		}
+		repo.HasWarnings = hasWarnings
+
+		// Add Dependabot info
+		for _, info := range data.DependaBot {
+			if info.Repo == repoName {
+				repo.DependabotInfo = info
+				repo.HasDependabotWarnings = !info.FileExists || !info.ActionsUpdate
+				break
+			}
+		}
+
+		// Count repos with/without warnings
+		if hasWarnings {
+			reposWithWarnings++
+		} else {
+			reposWithoutWarnings++
+		}
+
+		if repo.HasDependabotWarnings {
+			reposWithDependabotWarning++
+		} else {
+			reposWithoutDependabotWarning++
+		}
+	}
+
+	// Convert map to sorted slice
+	repos := make([]*RepoInfo, 0, len(repoMap))
+	for _, repo := range repoMap {
+		// Sort workflows by name
+		sort.Slice(repo.Workflows, func(i, j int) bool {
+			return repo.Workflows[i].Name < repo.Workflows[j].Name
+		})
+
+		repos = append(repos, repo)
+	}
+
+	// Sort repos: those with warnings first, then alphabetically
+	sort.Slice(repos, func(i, j int) bool {
+		if repos[i].HasWarnings != repos[j].HasWarnings {
+			return repos[i].HasWarnings // true comes before false
+		}
+		return repos[i].Name < repos[j].Name
+	})
 
 	// Calculate statistics
 	var externalWithHash, externalWithoutHash int
@@ -179,68 +280,6 @@ func generateHTMLReport(jsonFilePath, outputPath string, data OutputData, genera
 		return actionSummaries[i].Count > actionSummaries[j].Count
 	})
 
-	// Organize data by repository
-	repoMap := make(map[string]*RepoSummary)
-	for _, dep := range data.Workflows {
-		if _, exists := repoMap[dep.Repo]; !exists {
-			repoMap[dep.Repo] = &RepoSummary{
-				Name:      dep.Repo,
-				Workflows: []WorkflowSummary{},
-			}
-		}
-		repoMap[dep.Repo].Workflows = append(repoMap[dep.Repo].Workflows, WorkflowSummary{
-			Name:    dep.Workflow,
-			Actions: dep.Actions,
-			Branch:  dep.Branch,
-		})
-	}
-
-	// Convert map to sorted slice and check for warnings
-	repos := make([]*RepoSummary, 0, len(repoMap))
-	var reposWithWarnings, reposWithoutWarnings int
-
-	for _, repo := range repoMap {
-		// Sort workflows by name
-		sort.Slice(repo.Workflows, func(i, j int) bool {
-			return repo.Workflows[i].Name < repo.Workflows[j].Name
-		})
-
-		// Check if repo has any warnings (external deps without hash)
-		hasWarnings := false
-		for _, workflow := range repo.Workflows {
-			for _, action := range workflow.Actions {
-				if action.Type == "external" && !action.IsHashedVersion {
-					hasWarnings = true
-					break
-				}
-			}
-			if hasWarnings {
-				break
-			}
-		}
-
-		// Count repos with/without warnings
-		if hasWarnings {
-			reposWithWarnings++
-		} else {
-			reposWithoutWarnings++
-		}
-
-		// Add hasWarnings field to the repo summary
-		repos = append(repos, &RepoSummary{
-			Name:        repo.Name,
-			Workflows:   repo.Workflows,
-			HasWarnings: hasWarnings,
-		})
-	}
-	sort.Slice(repos, func(i, j int) bool {
-		// Sort by warnings first (repos with warnings come first), then by name
-		if repos[i].HasWarnings != repos[j].HasWarnings {
-			return repos[i].HasWarnings // true comes before false
-		}
-		return repos[i].Name < repos[j].Name
-	})
-
 	// Read the JSON data for embedding in the report
 	jsonData, err := os.ReadFile(jsonFilePath)
 	if err != nil {
@@ -268,29 +307,31 @@ func generateHTMLReport(jsonFilePath, outputPath string, data OutputData, genera
 	`, string(jsonData)))
 
 	if err := tmpl.Execute(f, struct {
-		Repos                []*RepoSummary
-		ActionSummaries      []ActionUsageSummary
-		JSONData             template.JS
-		InputFile            string
-		ExternalWithHash     int
-		ExternalWithoutHash  int
-		ReposWithWarnings    int
-		ReposWithoutWarnings int
-		TotalRepos           int
-		GeneratedTime        string
-		DependabotInfo       []DependabotInfo
+		Repos                         []*RepoInfo
+		ActionSummaries               []ActionUsageSummary
+		JSONData                      template.JS
+		InputFile                     string
+		ExternalWithHash              int
+		ExternalWithoutHash           int
+		ReposWithWarnings             int
+		ReposWithoutWarnings          int
+		ReposWithDependabotWarning    int
+		ReposWithoutDependabotWarning int
+		TotalRepos                    int
+		GeneratedTime                 string
 	}{
-		Repos:                repos,
-		ActionSummaries:      actionSummaries,
-		JSONData:             template.JS(embedData),
-		InputFile:            filepath.Base(jsonFilePath),
-		ExternalWithHash:     externalWithHash,
-		ExternalWithoutHash:  externalWithoutHash,
-		ReposWithWarnings:    reposWithWarnings,
-		ReposWithoutWarnings: reposWithoutWarnings,
-		TotalRepos:           len(repos),
-		GeneratedTime:        generatedTime,
-		DependabotInfo:       data.DependaBot,
+		Repos:                         repos,
+		ActionSummaries:               actionSummaries,
+		JSONData:                      template.JS(embedData),
+		InputFile:                     filepath.Base(jsonFilePath),
+		ExternalWithHash:              externalWithHash,
+		ExternalWithoutHash:           externalWithoutHash,
+		ReposWithWarnings:             reposWithWarnings,
+		ReposWithoutWarnings:          reposWithoutWarnings,
+		ReposWithDependabotWarning:    reposWithDependabotWarning,
+		ReposWithoutDependabotWarning: reposWithoutDependabotWarning,
+		TotalRepos:                    len(repos),
+		GeneratedTime:                 generatedTime,
 	}); err != nil {
 		return fmt.Errorf("failed to generate report: %w", err)
 	}
@@ -343,71 +384,96 @@ const reportTemplate = `
                 </div>
                 <div class="bg-red-50 p-4 rounded-lg">
                     <div class="text-3xl font-bold text-red-700">{{.ReposWithWarnings}}</div>
-                    <div class="text-sm text-red-600">Repositories with warnings</div>
+                    <div class="text-sm text-red-600">Repositories with unpinned actions</div>
                 </div>
                 <div class="bg-green-50 p-4 rounded-lg">
                     <div class="text-3xl font-bold text-green-700">{{.ReposWithoutWarnings}}</div>
-                    <div class="text-sm text-green-600">Repositories without warnings</div>
+                    <div class="text-sm text-green-600">Repositories with pinned actions</div>
                 </div>
                 <div class="bg-gray-50 p-4 rounded-lg">
                     <div class="text-3xl font-bold text-gray-700">{{.ExternalWithoutHash}}/{{add .ExternalWithHash .ExternalWithoutHash}}</div>
                     <div class="text-sm text-gray-600">GitHub Actions without pinned commit version</div>
                 </div>
             </div>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+                <div class="bg-amber-50 p-4 rounded-lg">
+                    <div class="text-3xl font-bold text-amber-700">{{.ReposWithDependabotWarning}}</div>
+                    <div class="text-sm text-amber-600">Repositories without Dependabot configured for Actions</div>
+                </div>
+                <div class="bg-emerald-50 p-4 rounded-lg">
+                    <div class="text-3xl font-bold text-emerald-700">{{.ReposWithoutDependabotWarning}}</div>
+                    <div class="text-sm text-emerald-600">Repositories with Dependabot configured for Actions</div>
+                </div>
+            </div>
+            <div class="mt-4 flex justify-end">
+                <button id="expandAllBtn" class="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
+                    Expand All
+                </button>
+            </div>
+        </div>
 
-            <!-- New Dependabot Summary Section -->
-            <div class="mt-6">
-                <h3 class="text-lg font-semibold mb-3">Dependabot Status</h3>
-                <div class="overflow-x-auto">
+        <!-- Repositories Summary Section -->
+        <div class="bg-white rounded-lg shadow-md p-6 mb-6 collapsible-section expanded">
+            <div class="flex justify-between items-center cursor-pointer" onclick="toggleCollapse(this.parentElement)">
+                <h2 class="text-xl font-semibold">Repositories summary</h2>
+                <svg class="chevron w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
+                </svg>
+            </div>
+            <div class="collapsible-content">
+                <div class="mt-4 overflow-x-auto">
                     <table class="min-w-full">
                         <thead>
                             <tr class="bg-gray-50">
                                 <th class="px-4 py-2 text-left text-sm font-medium text-gray-500">Repository</th>
                                 <th class="px-4 py-2 text-center text-sm font-medium text-gray-500">Dependabot File</th>
-                                <th class="px-4 py-2 text-center text-sm font-medium text-gray-500">GitHub Actions Updates</th>
+                                <th class="px-4 py-2 text-center text-sm font-medium text-gray-500">Actions Updates via Dependabot</th>
                                 <th class="px-4 py-2 text-center text-sm font-medium text-gray-500">Workflows</th>
-                                <th class="px-4 py-2 text-center text-sm font-medium text-gray-500">Actions</th>
+                                <th class="px-4 py-2 text-center text-sm font-medium text-gray-500">Pinned Actions</th>
                             </tr>
                         </thead>
                         <tbody class="divide-y divide-gray-200">
-                            {{range .DependabotInfo}}
-                            <tr class="hover:bg-gray-50">
+                            {{range .Repos}}
+                            <tr class="hover:bg-gray-50 {{ if .HasDependabotWarnings }}bg-amber-50{{end}} {{ if and (gt .ActionCount 0) (ne .HashedActionsCount .ActionCount)}}bg-red-50{{end}}">
                                 <td class="px-4 py-2 text-sm">
-                                    <a href="https://github.com/{{.Repo}}" target="_blank" class="text-blue-600 hover:text-blue-800">
-                                        {{.Repo}}
+                                    <a href="https://github.com/{{.Name}}" target="_blank" class="text-blue-600 hover:text-blue-800">
+                                        {{.Name }}
                                     </a>
                                 </td>
                                 <td class="px-4 py-2 text-sm text-center">
-                                    {{if .FileExists}}
+																	<a href="https://github.com/{{.Name}}/blob/master/.github/dependabot.yml" target="_blank">
+                                    {{if .DependabotInfo.FileExists}}
                                         <span class="text-green-500">✓</span>
                                     {{else}}
                                         <span class="text-red-500">✗</span>
                                     {{end}}
+																	</a>
                                 </td>
                                 <td class="px-4 py-2 text-sm text-center">
-                                    {{if .ActionsUpdate}}
+																	<a href="https://github.com/{{.Name}}/blob/master/.github/dependabot.yml" target="_blank">
+                                    {{if .DependabotInfo.ActionsUpdate}}
                                         <span class="text-green-500">✓</span>
                                     {{else}}
                                         <span class="text-red-500">✗</span>
                                     {{end}}
+																	</a>
                                 </td>
-                                <td class="px-4 py-2 text-sm text-center">
+                                <td class="px-4 py-2 text-sm text-right">
                                     {{.WorkflowCount}}
                                 </td>
-                                <td class="px-4 py-2 text-sm text-center">
-                                    {{.ActionCount}}
+                                <td class="px-4 py-2 text-sm text-right">
+                                    {{.HashedActionsCount}}/{{.ActionCount}}
+                                    {{if eq .HashedActionsCount .ActionCount}}
+                                        <span class="text-green-500">✓</span>
+                                    {{else}}
+                                        <span class="text-red-500">✗</span>
+                                    {{end}}
                                 </td>
                             </tr>
                             {{end}}
                         </tbody>
                     </table>
                 </div>
-            </div>
-
-            <div class="mt-4 flex justify-end">
-                <button id="expandAllBtn" class="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
-                    Expand All
-                </button>
             </div>
         </div>
 
@@ -444,7 +510,7 @@ const reportTemplate = `
                                     <div class="space-y-1">
 																		{{$actionName := .Name}}
                                         {{range .Versions}}
-                                        <div class="px-2 py-1 {{if not (eq (len .Version) 40)}}bg-red-100{{else}}bg-blue-50{{end}} rounded text-xs flex items-center">
+                                        <div class="px-2 py-1 {{if not (eq (len .Version) 40)}}bg-red-50{{else}}bg-blue-50{{end}} rounded text-xs flex items-center">
                                             <span class="font-mono">
 																								<a href="https://github.com/{{$actionName}}/commit/{{.Version}}" target="_blank" class="text-blue-600 hover:text-blue-800">{{.Version}}</a>
 																						</span>

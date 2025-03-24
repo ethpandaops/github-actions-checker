@@ -62,8 +62,6 @@ type DependabotInfo struct {
 	Repo          string `json:"repo"`
 	FileExists    bool   `json:"fileExists"`
 	ActionsUpdate bool   `json:"actionsUpdate"`
-	WorkflowCount int    `json:"workflowCount"`
-	ActionCount   int    `json:"actionCount"`
 }
 
 // Modify the output structure
@@ -658,8 +656,6 @@ func checkDependabotFile(ctx context.Context, client *github.Client, owner, repo
 		Repo:          fmt.Sprintf("%s/%s", owner, repo),
 		FileExists:    false,
 		ActionsUpdate: false,
-		WorkflowCount: 0,
-		ActionCount:   0,
 	}
 
 	// Try to get the dependabot.yml file
