@@ -14,19 +14,24 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"golang.org/x/oauth2"
+	"gopkg.in/yaml.v2"
 )
 
 var (
 	inputJSONFile string
 	targetRepo    string
 	branchName    string
+	customPRTitle string
 	prTitle       string
+	customPRBody  string
 	prBody        string
 	allRepos      bool
 	skipPR        bool
 	dryRun        bool
 	useFork       bool
-	createPRCmd   = &cobra.Command{
+	addDependabot bool
+
+	createPRCmd = &cobra.Command{
 		Use:   "create-pr",
 		Short: "Create a PR to update GitHub Actions to use recommended hashes",
 		RunE:  createPR,
@@ -40,18 +45,21 @@ const (
 	colorGreen  = "\033[32m"
 	colorYellow = "\033[33m"
 	colorBlue   = "\033[34m"
+
+	dependabotPath = ".github/dependabot.yml"
 )
 
 func init() {
 	createPRCmd.Flags().StringVarP(&inputJSONFile, "input", "i", "", "Input JSON file with action dependencies")
 	createPRCmd.Flags().StringVarP(&targetRepo, "repo", "r", "", "Target repository for PR (format: owner/repo)")
 	createPRCmd.Flags().StringVarP(&branchName, "branch", "b", "update-github-actions", "Branch name for the PR")
-	createPRCmd.Flags().StringVarP(&prTitle, "title", "t", "Update GitHub Actions to use pinned hashes", "PR title")
-	createPRCmd.Flags().StringVarP(&prBody, "body", "", "This PR updates GitHub Actions to use pinned commit hashes for better security.", "PR body")
+	createPRCmd.Flags().StringVarP(&customPRTitle, "title", "t", "", "PR title")
+	createPRCmd.Flags().StringVarP(&customPRBody, "body", "", "", "PR body")
 	createPRCmd.Flags().BoolVarP(&allRepos, "all", "a", false, "Process all repositories in the input file")
 	createPRCmd.Flags().BoolVarP(&skipPR, "skip-pr", "s", false, "Skip PR creation, only create branch with changes")
 	createPRCmd.Flags().BoolVarP(&dryRun, "dry-run", "d", false, "Show what would be changed without creating branch or PR")
 	createPRCmd.Flags().BoolVarP(&useFork, "fork", "f", false, "Create PR from a personal fork")
+	createPRCmd.Flags().BoolVar(&addDependabot, "dependabot", true, "Add or update dependabot.yml configuration for GitHub Actions")
 	createPRCmd.MarkFlagRequired("input")
 	// Don't mark repo as required - we'll check it in the command
 	rootCmd.AddCommand(createPRCmd)
@@ -223,7 +231,11 @@ func processRepoWithBranch(ctx context.Context, client *github.Client, owner, re
 	}
 
 	// Process workflow files and create PR
-	return processWorkflowsAndCreatePR(ctx, client, owner, repo, owner, defaultBranch, branchName, targetDeps)
+	if err := processFileChanges(ctx, client, owner, repo, owner, defaultBranch, branchName, targetDeps); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // Add new function to handle forked workflow
@@ -272,11 +284,15 @@ func processRepoWithFork(ctx context.Context, client *github.Client, upstreamOwn
 	}
 
 	// Process workflow files and create PR
-	return processWorkflowsAndCreatePR(ctx, client, upstreamOwner, repo, forkOwner, defaultBranch, branchName, targetDeps)
+	if err := processFileChanges(ctx, client, upstreamOwner, repo, forkOwner, defaultBranch, branchName, targetDeps); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // New function to process workflow files and create PR
-func processWorkflowsAndCreatePR(ctx context.Context, client *github.Client, upstreamOwner, repo, headOwner, defaultBranch, branchName string, targetDeps []ActionDependency) error {
+func processWorkflows(ctx context.Context, client *github.Client, upstreamOwner, repo, headOwner, defaultBranch, branchName string, targetDeps []ActionDependency) (map[string]bool, error) {
 	// Process each workflow file
 	filesChanged := make(map[string]bool)
 	for _, dep := range targetDeps {
@@ -454,6 +470,30 @@ func processWorkflowsAndCreatePR(ctx context.Context, client *github.Client, ups
 		}
 	}
 
+	return filesChanged, nil
+}
+
+func processFileChanges(ctx context.Context, client *github.Client, upstreamOwner, repo, headOwner, defaultBranch, branchName string, targetDeps []ActionDependency) error {
+	// Process workflow files
+	filesChanged, err := processWorkflows(ctx, client, upstreamOwner, repo, headOwner, defaultBranch, branchName, targetDeps)
+	if err != nil {
+		return err
+	}
+
+	// Process dependabot config if enabled
+	if addDependabot {
+		var err error
+		filesChanged, err = processDependabotConfig(ctx, client, upstreamOwner, repo, branchName, dryRun, filesChanged)
+		if err != nil {
+			return fmt.Errorf("failed to handle dependabot config: %w", err)
+		}
+	}
+
+	// Create pull request
+	return createPullRequest(ctx, client, upstreamOwner, repo, headOwner, defaultBranch, branchName, filesChanged)
+}
+
+func createPullRequest(ctx context.Context, client *github.Client, upstreamOwner, repo, headOwner, defaultBranch, branchName string, filesChanged map[string]bool) error {
 	// If no files were changed, check if a PR already exists and show its link
 	if len(filesChanged) == 0 {
 		if dryRun {
@@ -480,11 +520,63 @@ func processWorkflowsAndCreatePR(ctx context.Context, client *github.Client, ups
 		return nil
 	}
 
+	prTitle := ""
+	prBody := ""
+	hasWorkflowChanges := len(filesChanged) > 1 && filesChanged[dependabotPath] || len(filesChanged) > 0 && !filesChanged[dependabotPath]
+	hasDependabotChanges := filesChanged[dependabotPath]
+
+	// If no custom title is provided, generate one based on changes
+	if customPRTitle == "" {
+		var titleParts []string
+		titleParts = append(titleParts, "chore(deps):")
+		// Check for workflow changes
+		if hasWorkflowChanges {
+			titleParts = append(titleParts, "updating GitHub Actions to pinned hashes")
+		}
+		// Check for dependabot changes
+		if hasDependabotChanges {
+			if hasWorkflowChanges {
+				titleParts = append(titleParts, "and")
+			}
+			titleParts = append(titleParts, "enable automatic updates for GitHub Actions via Dependabot")
+		}
+		prTitle = strings.Join(titleParts, " ")
+	}
+
+	if customPRBody == "" {
+		var bodyParts []string
+		// Check for workflow changes
+		if hasWorkflowChanges {
+			bodyParts = append(bodyParts, `
+### 🔐 Github Actions versions pinning via commit hashes
+This PR updates the GitHub Actions to use pinned hashes.
+
+Using version tags like v1 or v2 in GitHub Actions can be risky as the action maintainer can change the underlying code of any tag, or branch.
+
+Pinning to specific commit hashes ensures you're using a specific, immutable version of the action.`)
+		}
+		// Check for dependabot changes
+		if hasDependabotChanges {
+			bodyParts = append(bodyParts, `
+### 💚 Dependabot automatic updates
+This PR enables automatic updates for GitHub Actions via [Dependabot](https://docs.github.com/en/code-security/dependabot/working-with-dependabot/keeping-your-actions-up-to-date-with-dependabot).
+
+Dependabot will periodically check for new versions of the actions and create a PR to update the version used in the repository.
+
+This should help keeping your GitHub Actions up to date with the latest versions of the actions.
+
+#### 🔍 How was this detected and generated?
+This PR was generated using [ethpandaops/github-actions-checker](https://github.com/ethpandaops/github-actions-checker).
+`)
+		}
+		prBody = strings.Join(bodyParts, "\n\n")
+	}
+
 	if dryRun {
 		fmt.Printf("\n%sWould create PR from %s/%s branch '%s' to '%s/%s' branch '%s'%s\n",
 			colorBlue, headOwner, repo, branchName, upstreamOwner, repo, defaultBranch, colorReset)
-		fmt.Printf("%sPR title would be: %s%s\n", colorBlue, prTitle, colorReset)
-		fmt.Printf("%sPR body would be: %s%s\n", colorBlue, prBody, colorReset)
+		fmt.Printf("%sPR title would be:\n%s%s\n", colorYellow, colorReset, prTitle)
+		fmt.Printf("%sPR body would be:%s %s\n", colorYellow, colorReset, prBody)
 		return nil
 	}
 
@@ -574,4 +666,137 @@ func waitForFork(ctx context.Context, client *github.Client, owner, repo string)
 		time.Sleep(2 * time.Second)
 	}
 	return fmt.Errorf("fork not ready after waiting")
+}
+
+func processDependabotConfig(ctx context.Context, client *github.Client, owner, repo, branch string, dryRun bool, filesChanged map[string]bool) (map[string]bool, error) {
+
+	// Try to get existing file
+	content, _, _, err := client.Repositories.GetContents(
+		ctx,
+		owner,
+		repo,
+		dependabotPath,
+		&github.RepositoryContentGetOptions{Ref: branch},
+	)
+
+	defaultConfig := []byte(`version: 2
+updates:
+   - package-ecosystem: github-actions
+     directory: /
+     schedule:
+        interval: monthly
+     groups:
+        actions:
+           patterns:
+              - '*'
+`)
+
+	if err != nil {
+		if dryRun {
+			fmt.Printf("%sWould create new %s with GitHub Actions configuration:%s\n", colorYellow, dependabotPath, colorReset)
+			fmt.Printf("%s\n", string(defaultConfig))
+			filesChanged[dependabotPath] = true
+			return filesChanged, nil
+		}
+
+		// Create new file
+		_, _, err = client.Repositories.CreateFile(
+			ctx,
+			owner,
+			repo,
+			dependabotPath,
+			&github.RepositoryContentFileOptions{
+				Message: github.Ptr("Add dependabot configuration for GitHub Actions"),
+				Content: defaultConfig,
+				Branch:  github.Ptr(branch),
+			},
+		)
+		if err != nil {
+			return filesChanged, fmt.Errorf("failed to create dependabot config: %w", err)
+		}
+		logrus.Info("Created new dependabot.yml with GitHub Actions configuration")
+		filesChanged[dependabotPath] = true
+		return filesChanged, nil
+	}
+
+	// File exists, decode content
+	fileContent, err := content.GetContent()
+	if err != nil {
+		return filesChanged, fmt.Errorf("failed to decode content: %w", err)
+	}
+
+	// Parse YAML
+	var config map[interface{}]interface{}
+	if err := yaml.Unmarshal([]byte(fileContent), &config); err != nil {
+		return filesChanged, fmt.Errorf("failed to parse yaml: %w", err)
+	}
+
+	updates, ok := config["updates"].([]interface{})
+	if !ok {
+		updates = []interface{}{}
+	}
+
+	// Check if GitHub Actions config exists and is properly configured
+	hasGitHubActions := false
+	for _, update := range updates {
+		if u, ok := update.(map[interface{}]interface{}); ok {
+			if ecosystem, ok := u["package-ecosystem"].(string); ok {
+				if ecosystem == "github-actions" {
+					hasGitHubActions = true
+					break
+				}
+			}
+		}
+	}
+
+	if !hasGitHubActions {
+		if dryRun {
+			fmt.Printf("%sWould add GitHub Actions configuration to existing %s%s\n", colorYellow, dependabotPath, colorReset)
+			filesChanged[dependabotPath] = true
+			return filesChanged, nil
+		}
+
+		// Add GitHub Actions config
+		newUpdate := map[string]interface{}{
+			"package-ecosystem": "github-actions",
+			"directory":         "/",
+			"schedule": map[string]interface{}{
+				"interval": "monthly",
+			},
+			"groups": map[string]interface{}{
+				"actions": map[string]interface{}{
+					"patterns": []string{"*"},
+				},
+			},
+		}
+		updates = append(updates, newUpdate)
+		config["updates"] = updates
+
+		// Convert back to YAML
+		newContent, err := yaml.Marshal(config)
+		if err != nil {
+			return filesChanged, fmt.Errorf("failed to marshal yaml: %w", err)
+		}
+
+		// Update file
+		_, _, err = client.Repositories.UpdateFile(
+			ctx,
+			owner,
+			repo,
+			dependabotPath,
+			&github.RepositoryContentFileOptions{
+				Message: github.Ptr("Add GitHub Actions configuration to dependabot.yml"),
+				Content: newContent,
+				SHA:     content.SHA,
+				Branch:  github.Ptr(branch),
+			},
+		)
+		if err != nil {
+			return filesChanged, fmt.Errorf("failed to update dependabot config: %w", err)
+		}
+		logrus.Info("Added GitHub Actions configuration to existing dependabot.yml")
+		filesChanged[dependabotPath] = true
+	}
+
+	return filesChanged, nil
 }

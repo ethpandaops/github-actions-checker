@@ -7,6 +7,7 @@ require (
 	github.com/sirupsen/logrus v1.9.3
 	github.com/spf13/cobra v1.9.1
 	golang.org/x/oauth2 v0.28.0
+	gopkg.in/yaml.v2 v2.4.0
 )
 
 require (
