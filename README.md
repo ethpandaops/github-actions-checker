@@ -109,6 +109,8 @@ Required scopes:
  - Contents: Read and Write
  - Workflow: Read and Write
 
+The PRs will also include a [Dependabot](https://docs.github.com/en/code-security/dependabot/working-with-dependabot/automating-dependabot-with-github-actions) config file to ensure the actions are updated regularly. You can disable this by setting the `--dependabot false` flag. We do recommend to keep it enabled though.
+
 #### Run in dry-run mode
 
 This will show you what would be changed without actually creating a PR or a branch. Use the `--dry-run` flag.
