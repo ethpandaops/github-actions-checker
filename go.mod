@@ -1,6 +1,6 @@
 module github.com/ethpandaops/github-actions-deps-checker
 
-go 1.23.5
+go 1.26.10
 
 require (
 	github.com/google/go-github/v70 v70.0.0
