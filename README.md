@@ -101,7 +101,7 @@ export GITHUB_TOKEN="$(gh auth token)"
 
 ## Creating PRs
 
-**Note:** You need to create a proper personal access token (PAT) for this one. If you're using the `$(gh auth token)` approach, that token won't have enought permissions.
+**Note:** You need to create a proper personal access token (PAT) for this one. If you're using the `$(gh auth token)` approach, that token won't have enough permissions.
 
 Create a PAT under: https://github.com/settings/personal-access-tokens
 
